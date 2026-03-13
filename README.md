@@ -1,85 +1,180 @@
 # openwrt-builder
 
-基于 **官方 OpenWrt 最新 release** 的 x86_64 固件构建仓库。
+一个尽量省心的 **官方 OpenWrt x86_64 自动构建仓库**。
 
-目标很简单：
+它做的事情很克制：
 
-- 跟随官方最新正式版
-- 使用 ImageBuilder 快速出包
-- 保持文件名与官方风格一致
-- 仅发布最终需要的 EFI 镜像
-- 使用中国境内镜像源加速软件包获取
+- 只跟 **官方最新发行版**
+- 只做 **x86_64 / generic**
+- 只保留最后真正要用的那个镜像
+- 只在你**手动运行**时构建
+- 只做少量、明确、可维护的定制
 
-## 当前构建目标
+如果你想要的是：**官方味道尽量不变，但又想顺手带上自己的包和基础配置**，这套就很合适。
 
-- Target: `x86/64`
-- Profile: `generic`
-- Filesystem: `squashfs`
-- Final image: `combined-efi.img.gz`
-- Timezone: `Asia/Shanghai`
-- Rootfs partsize: `600`
-- Kernel partsize: `32`
-- Package mirror: `Tsinghua Tuna`
+---
 
-最终发布到 GitHub Release 的文件名格式为：
+## 这仓库现在会产出什么
+
+最终只发布一个文件到 **GitHub Releases**：
+
+```txt
+openwrt-<version>-x86-64-generic-squashfs-combined-efi.img.gz
+```
+
+例如：
 
 ```txt
 openwrt-25.12.0-x86-64-generic-squashfs-combined-efi.img.gz
 ```
 
-实际版本号会随着官方最新 release 自动变化。
+命名风格尽量贴近官方，不额外整花活。
+
+---
+
+## 构建策略
+
+这套仓库走的是：
+
+**官方 release → 官方 ImageBuilder → 你的少量定制 → 发布到 Release**
+
+不是：
+
+- snapshot
+- master/main 源码日编
+- ImmortalWrt / LEDE 分支魔改
+- 重型全量源码编译流
+
+这么做的好处很实际：
+
+- **快**：ImageBuilder 比完整源码编译轻很多
+- **稳**：跟官方发行版走，坑少一截
+- **省心**：后期维护基本只改几个文件
+- **结果干净**：只留最终镜像，不堆一堆附件
+
+---
+
+## 当前默认配置
+
+- **Target**: `x86/64`
+- **Profile**: `generic`
+- **Filesystem**: `squashfs`
+- **Image**: `combined-efi.img.gz`
+- **Timezone**: `Asia/Shanghai`
+- **Rootfs partsize**: `600`
+- **Kernel partsize**: `32`
+- **Mirror**: `Tsinghua Tuna`
+- **Trigger**: `workflow_dispatch`（手动运行）
+
+---
 
 ## 仓库结构
 
 ```txt
-.github/workflows/build.yml   # GitHub Actions 构建与发布逻辑
-cfg/pkgs.txt                  # 软件包列表（每行一个）
-files/etc/config/system       # 时区、NTP、主机名等系统配置
-files/etc/defaults/10-model   # x86 设备型号名修正
-scripts/tune.sh               # 预留自定义调整脚本
+.github/workflows/build.yml   GitHub Actions 构建与发布逻辑
+cfg/pkgs.txt                  软件包列表（每行一个）
+files/etc/config/system       系统时区、NTP、主机名等配置
+files/etc/defaults/10-model   x86 设备型号名修正
+scripts/tune.sh               预留的自定义调整脚本
 ```
 
-## 工作流说明
+如果平时只改常用内容，你大概率只会碰这三个：
 
-工作流会自动执行以下步骤：
+- `cfg/pkgs.txt`
+- `files/etc/config/system`
+- `.github/workflows/build.yml`
 
-1. 获取官方 OpenWrt 最新 release tag
-2. 下载对应版本的 x86_64 ImageBuilder
-3. 生成国内 apk 软件源配置
-4. 读取 `cfg/pkgs.txt` 作为软件包清单
-5. 构建 x86_64 `generic` 的 `combined-efi.img.gz`
-6. 仅保留最终 EFI 镜像
-7. 上传到 GitHub Release
+---
 
-不会保留多余的：
+## 怎么用
 
-- manifest
-- buildinfo
-- sha256sums
-- json
-- 其他镜像格式
+### 1）修改软件包
 
-## 软件包管理
-
-软件包列表保存在：
+包列表放在：
 
 ```txt
 cfg/pkgs.txt
 ```
 
-规则：
+规则很简单：
 
-- 每行一个包
+- 一行一个包
 - 支持空行
-- 支持注释行（以 `#` 开头）
-- 支持排除默认包，例如：
+- 支持注释行
+- 支持移除默认包
+
+比如：
 
 ```txt
 dnsmasq-full
 -dnsmasq
 ```
 
-当前包列表用于尽量贴近现有系统需求，同时保持构建逻辑简单稳定。
+这表示：
+
+- 安装 `dnsmasq-full`
+- 移除默认的 `dnsmasq`
+
+---
+
+### 2）调整系统配置
+
+默认时区和 NTP 在这里：
+
+```txt
+files/etc/config/system
+```
+
+目前已经预设：
+
+- `Asia/Shanghai`
+- `CST-8`
+- 阿里云 / 腾讯的 NTP 服务器
+
+---
+
+### 3）手动运行构建
+
+去仓库的 **Actions** 页面，选中：
+
+```txt
+build
+```
+
+然后点 **Run workflow** 就行。
+
+这套配置现在是**纯手动触发**：
+
+- 不会因为 push 自动编译
+- 不会定时偷偷跑
+- 不会提交一下就开始烧 Actions 配额
+
+---
+
+## 构建完成后会发生什么
+
+工作流会自动：
+
+1. 获取官方最新 release
+2. 下载对应版本的官方 ImageBuilder
+3. 写入国内软件源配置
+4. 读取 `cfg/pkgs.txt` 中的软件包
+5. 构建 x86_64 `generic` 镜像
+6. 从产物里挑出最终 EFI 镜像
+7. 统一整理成官方风格命名
+8. 上传到当前仓库的 **Releases**
+
+默认不会保留一堆杂物，比如：
+
+- `manifest`
+- `buildinfo`
+- `sha256sums`
+- `json`
+- 其他不需要的镜像格式
+
+整个思路就一句话：**只留下你真正会下载的那个文件。**
+
+---
 
 ## 国内镜像源
 
@@ -89,40 +184,33 @@ dnsmasq-full
 https://mirrors.tuna.tsinghua.edu.cn/openwrt
 ```
 
-构建时会自动生成对应 release 的 apk 软件源配置到固件中。
-
-如果以后要换源，只需要修改：
-
-```txt
-.github/workflows/build.yml
-```
-
-中的：
+构建时会自动把对应 release 的 apk 源写进固件里。  
+以后如果你想换成别的镜像，只需要改 workflow 里的：
 
 ```txt
 MIRROR_BASE
 ```
 
-## 系统定制
+---
+
+## 额外的小定制
 
 ### 时区
-
-已预设：
+已经设为：
 
 - `Asia/Shanghai`
 - `CST-8`
 
-### NTP
+### 型号名修正
+有些 x86 设备在 LuCI 里会把型号显示成很蠢的：
 
-默认使用国内常见时间服务器：
+```txt
+Default string
+```
 
-- `ntp.aliyun.com`
-- `ntp1.aliyun.com`
-- `ntp.tencent.com`
+这里加了一点小修正逻辑：
 
-### 设备型号名修正
-
-对于部分 x86 主板，如果 DMI 产品名显示为 `Default string`，会在首次启动时将型号展示修正为：
+如果检测到这个值，就把展示名改成：
 
 ```txt
 OpenWrt Router
@@ -134,42 +222,62 @@ OpenWrt Router
 files/etc/defaults/10-model
 ```
 
-## 使用方式
+不是什么大功能，但看着顺眼很多。
 
-### 手动构建
+---
 
-1. 打开仓库的 **Actions** 页面
-2. 选择 `build`
-3. 点击 **Run workflow**
+## 为什么不用完整源码编译
 
-### 构建结果
+因为对这个仓库的目标来说，没必要上重武器。
 
-构建成功后，产物会发布到仓库的 **Releases** 页面。
+你现在要的是：
 
-只保留最终镜像：
+- 官方发行版底子
+- x86_64
+- 少量包
+- 少量配置
+- 快速、稳定、可重复地产出镜像
 
-```txt
-openwrt-<version>-x86-64-generic-squashfs-combined-efi.img.gz
-```
+那 ImageBuilder 就是更合理的方案。
+
+如果以后真要上：
+
+- 第三方源码包移植
+- 深度补丁
+- 自己改 target
+- 大量底层裁剪
+
+那时候再切完整源码编译也不迟。
+
+---
 
 ## 维护建议
 
-日常维护通常只需要关注三个地方：
+日常维护尽量保持克制：
 
-- `cfg/pkgs.txt`：增删软件包
-- `files/etc/config/system`：修改系统配置
-- `.github/workflows/build.yml`：修改构建与发布逻辑
+### 优先做这些
+- 调整 `cfg/pkgs.txt`
+- 改 overlay 配置
+- 改少量 workflow 逻辑
 
-## 说明
+### 尽量少做这些
+- 跨发行版搬包
+- 塞一堆非官方补丁
+- 把仓库折腾成大杂烩
 
-本仓库目标是：
+这仓库的价值，不在于功能堆得多，而在于：
 
-- 尽量保持官方味道
-- 尽量减少跨发行版魔改
-- 尽量减少额外维护负担
+**它能一直稳定地产出你想要的官方风格固件。**
 
-如果后续新增功能，优先选择：
+---
 
-- 官方仓库已有包
-- 简单 overlay
-- 少量可维护的构建逻辑调整
+## 最后
+
+如果 workflow 报错，先看两类东西：
+
+- 包名是不是在当前官方 release 里还存在
+- 上游 ImageBuilder 文件名/目录结构有没有变化
+
+这两类问题最常见，也最好修。
+
+剩下的，真炸了再拆。
