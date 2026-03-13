@@ -1,6 +1,6 @@
-name: build
+"name": build
 
-on:
+"on":
   workflow_dispatch:
 
 concurrency:
@@ -12,14 +12,12 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-
     env:
       OPENWRT_TARGET: x86
       OPENWRT_SUBTARGET: 64
       OPENWRT_PROFILE: generic
       OPENWRT_FS: squashfs
       OPENWRT_IMAGE: combined-efi.img.gz
-      TZ_NAME: Asia/Shanghai
       ROOTFS_PARTSIZE: 600
       KERNEL_PARTSIZE: 32
       MIRROR_BASE: https://mirrors.tuna.tsinghua.edu.cn/openwrt
@@ -39,22 +37,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          JSON="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL https://api.github.com/repos/openwrt/openwrt/releases/latest)"
-          TAG="$(printf '%s' "$JSON" | jq -r '.tag_name')"
-          VER="${TAG#v}"
-          [ -n "$TAG" ] && [ "$TAG" != "null" ]
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "ver=$VER" >> "$GITHUB_OUTPUT"
-          echo "file=openwrt-${VER}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}-${OPENWRT_PROFILE}-${OPENWRT_FS}-${OPENWRT_IMAGE}" >> "$GITHUB_OUTPUT"
+          json="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL https://api.github.com/repos/openwrt/openwrt/releases/latest)"
+          tag="$(printf '%s' "$json" | jq -r '.tag_name')"
+          ver="${tag#v}"
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            echo "failed to get latest official release" >&2
+            exit 1
+          fi
+          file="openwrt-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}-${OPENWRT_PROFILE}-${OPENWRT_FS}-${OPENWRT_IMAGE}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
 
       - name: Download imagebuilder
         shell: bash
         run: |
           set -euo pipefail
-          VER='${{ steps.rel.outputs.ver }}'
-          FILE="openwrt-imagebuilder-${VER}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}.Linux-x86_64.tar.zst"
-          URL="${MIRROR_BASE}/releases/${VER}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/${FILE}"
-          curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 180 -fL "$URL" -o ib.tar.zst
+          ver="${{ steps.rel.outputs.ver }}"
+          file="openwrt-imagebuilder-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}.Linux-x86_64.tar.zst"
+          url="${MIRROR_BASE}/releases/${ver}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/${file}"
+          curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 180 -fL "$url" -o ib.tar.zst
           tar --zstd -xf ib.tar.zst
           mv openwrt-imagebuilder-* imagebuilder
 
@@ -62,30 +64,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          ver="${{ steps.rel.outputs.ver }}"
           mkdir -p imagebuilder/files
-          [ -d files ] && rsync -a files/ imagebuilder/files/ || true
-          VER='${{ steps.rel.outputs.ver }}'
+          if [ -d files ]; then
+            rsync -a files/ imagebuilder/files/
+          fi
           mkdir -p imagebuilder/files/etc/apk/repositories.d
           cat > imagebuilder/files/etc/apk/repositories.d/distfeeds.list <<EOF
-${MIRROR_BASE}/releases/${VER}/packages/x86_64/base
-${MIRROR_BASE}/releases/${VER}/packages/x86_64/luci
-${MIRROR_BASE}/releases/${VER}/packages/x86_64/packages
-${MIRROR_BASE}/releases/${VER}/packages/x86_64/routing
-${MIRROR_BASE}/releases/${VER}/packages/x86_64/telephony
+${MIRROR_BASE}/releases/${ver}/packages/x86_64/base
+${MIRROR_BASE}/releases/${ver}/packages/x86_64/luci
+${MIRROR_BASE}/releases/${ver}/packages/x86_64/packages
+${MIRROR_BASE}/releases/${ver}/packages/x86_64/routing
+${MIRROR_BASE}/releases/${ver}/packages/x86_64/telephony
 EOF
           if [ -x scripts/tune.sh ]; then
-            scripts/tune.sh imagebuilder "$VER"
+            scripts/tune.sh imagebuilder "$ver"
           fi
 
       - name: Build
         shell: bash
         run: |
           set -euo pipefail
-          PKGS="$(grep -vE '^\s*($|#)' "${GITHUB_WORKSPACE}/${PACKAGES_FILE}" | tr '\n' ' ' | xargs)"
+          pkgs="$(grep -vE '^\s*($|#)' "${GITHUB_WORKSPACE}/${PACKAGES_FILE}" | tr '\n' ' ' | xargs)"
           cd imagebuilder
           make image \
             PROFILE="${OPENWRT_PROFILE}" \
-            PACKAGES="$PKGS" \
+            PACKAGES="$pkgs" \
             FILES="files" \
             ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}" \
             KERNEL_PARTSIZE="${KERNEL_PARTSIZE}"
@@ -95,14 +99,17 @@ EOF
         shell: bash
         run: |
           set -euo pipefail
-          VER='${{ steps.rel.outputs.ver }}'
-          WANT='${{ steps.rel.outputs.file }}'
-          SRC="$(find imagebuilder/bin/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET} -type f -name "*${OPENWRT_PROFILE}*${OPENWRT_FS}*${OPENWRT_IMAGE}" | head -n 1)"
-          [ -n "$SRC" ]
+          want="${{ steps.rel.outputs.file }}"
+          src="$(find "imagebuilder/bin/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}" -type f -name "*${OPENWRT_PROFILE}*${OPENWRT_FS}*${OPENWRT_IMAGE}" | head -n 1)"
+          if [ -z "$src" ]; then
+            echo "final image not found" >&2
+            find imagebuilder/bin/targets -maxdepth 3 -type f | sort >&2 || true
+            exit 1
+          fi
           mkdir -p out
-          cp -f "$SRC" "out/$WANT"
-          echo "path=out/$WANT" >> "$GITHUB_OUTPUT"
-          echo "name=$WANT" >> "$GITHUB_OUTPUT"
+          cp -f "$src" "out/$want"
+          echo "path=out/$want" >> "$GITHUB_OUTPUT"
+          echo "name=$want" >> "$GITHUB_OUTPUT"
 
       - name: Publish release
         env:
@@ -110,9 +117,10 @@ EOF
         shell: bash
         run: |
           set -euo pipefail
-          TAG='${{ steps.rel.outputs.tag }}'
-          TITLE='OpenWrt ${{ steps.rel.outputs.ver }} x86_64 build'
-          NOTES=$(cat <<'EOF'
+          tag="${{ steps.rel.outputs.tag }}"
+          ver="${{ steps.rel.outputs.ver }}"
+          title="OpenWrt ${ver} x86_64 build"
+          notes=$(cat <<EOF
 Based on official OpenWrt release.
 
 - Target: x86/64 generic
@@ -123,8 +131,8 @@ Based on official OpenWrt release.
 - Kernel partsize: 32 MB
 EOF
 )
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "${{ steps.pick.outputs.path }}" --clobber
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${{ steps.pick.outputs.path }}" --clobber
           else
-            gh release create "$TAG" "${{ steps.pick.outputs.path }}" --title "$TITLE" --notes "$NOTES"
+            gh release create "$tag" "${{ steps.pick.outputs.path }}" --title "$title" --notes "$notes"
           fi
