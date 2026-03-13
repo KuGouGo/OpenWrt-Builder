@@ -2,8 +2,10 @@ name: Build OpenWrt x86_64 (Official Latest Release)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '20 21 * * *'
+
+concurrency:
+  group: openwrt-x86_64-build
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -34,16 +36,20 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl jq unzip xz-utils zstd build-essential libncurses-dev gawk rsync
+          sudo apt-get install -y curl jq tar zstd rsync
 
       - name: Fetch latest official release
         id: release
         shell: bash
         run: |
           set -euo pipefail
-          RELEASE_JSON="$(curl -fsSL https://api.github.com/repos/openwrt/openwrt/releases/latest)"
+          RELEASE_JSON="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL https://api.github.com/repos/openwrt/openwrt/releases/latest)"
           TAG="$(printf '%s' "$RELEASE_JSON" | jq -r '.tag_name')"
           VERSION="${TAG#v}"
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "Failed to fetch latest release tag" >&2
+            exit 1
+          fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Latest release: $TAG"
@@ -56,7 +62,7 @@ jobs:
           FILE="openwrt-imagebuilder-${VERSION}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}.Linux-x86_64.tar.zst"
           URL="${MIRROR_BASE}/releases/${VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/${FILE}"
           echo "Downloading: $URL"
-          curl -fL "$URL" -o imagebuilder.tar.zst
+          curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 180 -fL "$URL" -o imagebuilder.tar.zst
           tar --zstd -xf imagebuilder.tar.zst
           mv openwrt-imagebuilder-* imagebuilder
 
@@ -65,7 +71,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p imagebuilder/files
-          rsync -a files/ imagebuilder/files/
+          if [ -d files ]; then
+            rsync -a files/ imagebuilder/files/
+          fi
 
       - name: Generate China mirror apk feeds
         shell: bash
@@ -74,12 +82,12 @@ jobs:
           VERSION='${{ steps.release.outputs.version }}'
           mkdir -p imagebuilder/files/etc/apk/repositories.d
           cat > imagebuilder/files/etc/apk/repositories.d/distfeeds.list <<EOF
-          ${MIRROR_BASE}/releases/${VERSION}/packages/x86_64/base
-          ${MIRROR_BASE}/releases/${VERSION}/packages/x86_64/luci
-          ${MIRROR_BASE}/releases/${VERSION}/packages/x86_64/packages
-          ${MIRROR_BASE}/releases/${VERSION}/packages/x86_64/routing
-          ${MIRROR_BASE}/releases/${VERSION}/packages/x86_64/telephony
-          EOF
+${MIRROR_BASE}/releases/${VERSION}/packages/x86_64/base
+${MIRROR_BASE}/releases/${VERSION}/packages/x86_64/luci
+${MIRROR_BASE}/releases/${VERSION}/packages/x86_64/packages
+${MIRROR_BASE}/releases/${VERSION}/packages/x86_64/routing
+${MIRROR_BASE}/releases/${VERSION}/packages/x86_64/telephony
+EOF
 
       - name: Optional custom hook
         shell: bash
