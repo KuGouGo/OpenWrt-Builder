@@ -1,6 +1,6 @@
-"name": build
+name: build
 
-"on":
+on:
   workflow_dispatch:
 
 concurrency:
