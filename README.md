@@ -7,22 +7,6 @@
 
 Build official OpenWrt x86_64 release images with a small set of practical customizations.
 
-## Output
-
-```txt
-openwrt-<version>-x86-64-generic-squashfs-combined-efi.img.gz
-```
-
-Current defaults:
-
-- official latest release
-- x86/64 generic
-- squashfs combined-efi
-- Asia/Shanghai
-- rootfs 600 / kernel 32
-- China mirror (Tuna)
-- manual run only
-
 ## Usage
 
 1. Edit package list: `cfg/pkgs.txt`
@@ -42,12 +26,4 @@ scripts/tune.sh
 
 ## Download
 
-Releases:
-
 <https://github.com/KuGouGo/openwrt-builder/releases>
-
-Expected file:
-
-```txt
-openwrt-<version>-x86-64-generic-squashfs-combined-efi.img.gz
-```
