@@ -1,0 +1,116 @@
+name: Build OpenWrt x86_64 (Official Latest Release)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '20 21 * * *'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    env:
+      OPENWRT_TARGET: x86
+      OPENWRT_SUBTARGET: 64
+      OPENWRT_PROFILE: generic
+      TZ_NAME: Asia/Shanghai
+      ROOTFS_PARTSIZE: 800
+      KERNEL_PARTSIZE: 64
+      MIRROR_BASE: https://mirrors.tuna.tsinghua.edu.cn/openwrt
+      PACKAGES: >-
+        bash ca-bundle curl dnsmasq-full -dnsmasq dropbear e2fsprogs ethtool
+        htop ip-full jq lsblk nano odhcp6c odhcpd-ipv6only openssh-sftp-server
+        pciutils ppp ppp-mod-pppoe sing-box usbutils wget-ssl luci
+        luci-app-firewall luci-app-package-manager luci-i18n-base-zh-cn
+        luci-i18n-firewall-zh-cn luci-i18n-package-manager-zh-cn
+        luci-theme-bootstrap
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq unzip xz-utils zstd build-essential libncurses-dev gawk rsync
+
+      - name: Fetch latest official release
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_JSON="$(curl -fsSL https://api.github.com/repos/openwrt/openwrt/releases/latest)"
+          TAG="$(printf '%s' "$RELEASE_JSON" | jq -r '.tag_name')"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Latest release: $TAG"
+
+      - name: Download ImageBuilder
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION='${{ steps.release.outputs.version }}'
+          FILE="openwrt-imagebuilder-${VERSION}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}.Linux-x86_64.tar.zst"
+          URL="${MIRROR_BASE}/releases/${VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/${FILE}"
+          echo "Downloading: $URL"
+          curl -fL "$URL" -o imagebuilder.tar.zst
+          tar --zstd -xf imagebuilder.tar.zst
+          mv openwrt-imagebuilder-* imagebuilder
+
+      - name: Prepare files overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p imagebuilder/files
+          rsync -a files/ imagebuilder/files/
+
+      - name: Generate China mirror apk feeds
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION='${{ steps.release.outputs.version }}'
+          mkdir -p imagebuilder/files/etc/apk/repositories.d
+          cat > imagebuilder/files/etc/apk/repositories.d/distfeeds.list <<EOF
+          ${MIRROR_BASE}/releases/${VERSION}/packages/x86_64/base
+          ${MIRROR_BASE}/releases/${VERSION}/packages/x86_64/luci
+          ${MIRROR_BASE}/releases/${VERSION}/packages/x86_64/packages
+          ${MIRROR_BASE}/releases/${VERSION}/packages/x86_64/routing
+          ${MIRROR_BASE}/releases/${VERSION}/packages/x86_64/telephony
+          EOF
+
+      - name: Optional custom hook
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -x scripts/diy.sh ]; then
+            scripts/diy.sh imagebuilder '${{ steps.release.outputs.version }}'
+          fi
+
+      - name: Build firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd imagebuilder
+          make image \
+            PROFILE="${OPENWRT_PROFILE}" \
+            PACKAGES="${PACKAGES}" \
+            FILES="files" \
+            ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}" \
+            KERNEL_PARTSIZE="${KERNEL_PARTSIZE}"
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          find imagebuilder/bin/targets -type f \( -name '*.img.gz' -o -name '*.manifest' -o -name '*.buildinfo' -o -name '*.sha256sums' -o -name '*.json' \) -exec cp -f {} artifacts/ \;
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-x86-64-${{ steps.release.outputs.version }}
+          path: artifacts/
+          if-no-files-found: error
