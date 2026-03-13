@@ -1,11 +1,11 @@
-# openwrt-builder
+# OpenWrt Builder
 
 [![Build](https://img.shields.io/github/actions/workflow/status/KuGouGo/openwrt-builder/build.yml?branch=main&label=build)](https://github.com/KuGouGo/openwrt-builder/actions/workflows/build.yml)
 [![Release](https://img.shields.io/github/v/release/KuGouGo/openwrt-builder?display_name=tag&label=release)](https://github.com/KuGouGo/openwrt-builder/releases)
 [![Upstream](https://img.shields.io/badge/upstream-OpenWrt-00b5e2)](https://github.com/openwrt/openwrt)
 [![Target](https://img.shields.io/badge/target-x86%2F64-generic)](https://openwrt.org/)
 
-Build official OpenWrt x86_64 release images with a small set of practical customizations.
+Build official OpenWrt x86_64 release images with a clean, release-based workflow.
 
 ## Usage
 
