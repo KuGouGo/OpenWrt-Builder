@@ -95,7 +95,7 @@ jobs:
             rsync -a --exclude 'tmp/' files/ imagebuilder/files/
           fi
           if [ -d files/tmp/nikki-feed ]; then
-            find files/tmp/nikki-feed -maxdepth 1 -type f \( -name '*.apk' -o -name '*.ipk' \) -exec cp -f {} imagebuilder/packages/ \;
+            find files/tmp/nikki-feed -maxdepth 1 -type f \( -name '*.apk' -o -name '*.ipk' -o -name '*.adb' \) -exec cp -f {} imagebuilder/packages/ \;
           fi
           echo "--- imagebuilder/packages ---"
           find imagebuilder/packages -maxdepth 1 -type f | sort || true
