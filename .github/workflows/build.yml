@@ -108,17 +108,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p diagnostics
           pkgs="$(grep -vE '^\s*($|#)' "${GITHUB_WORKSPACE}/${PACKAGES_FILE}" | tr '\n' ' ' | xargs)"
           echo "Custom packages : $pkgs"
           cd imagebuilder
           make manifest \
             PROFILE="${OPENWRT_PROFILE}" \
-            PACKAGES="$pkgs"
+            PACKAGES="$pkgs" \
+            2>&1 | tee "${GITHUB_WORKSPACE}/diagnostics/manifest.log"
 
       - name: Build
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p diagnostics
           pkgs="$(grep -vE '^\s*($|#)' "${GITHUB_WORKSPACE}/${PACKAGES_FILE}" | tr '\n' ' ' | xargs)"
           echo "Custom packages : $pkgs"
           cd imagebuilder
@@ -126,7 +129,34 @@ jobs:
             PROFILE="${OPENWRT_PROFILE}" \
             PACKAGES="$pkgs" \
             FILES="files" \
-            ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}"
+            ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}" \
+            2>&1 | tee "${GITHUB_WORKSPACE}/diagnostics/build.log"
+
+      - name: Collect diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          {
+            echo "== imagebuilder/packages =="
+            find imagebuilder/packages -maxdepth 1 -type f | sort || true
+            echo
+            echo "== imagebuilder/bin/targets =="
+            find imagebuilder/bin/targets -maxdepth 3 -type f | sort || true
+          } > diagnostics/tree.txt
+          cp -f cfg/pkgs.txt diagnostics/pkgs.txt
+          if [ -d files/tmp/nikki-feed ]; then
+            find files/tmp/nikki-feed -maxdepth 1 -type f | sort > diagnostics/nikki-feed.txt || true
+          fi
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-diagnostics
+          path: diagnostics/
+          if-no-files-found: warn
 
       - name: Pick final image
         id: pick

@@ -15,7 +15,8 @@ The workflow is intentionally optimized for x86_64 only. It follows the official
 2. Edit system config: `files/etc/config/system`
 3. Run workflow: `Actions -> build -> Run workflow`
 4. The workflow first runs `make manifest` as a dependency preflight
-5. Download image from `Releases`
+5. Build diagnostics are uploaded as an artifact even if the job fails
+6. Download image from `Releases`
 
 ## Files
 
