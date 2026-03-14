@@ -112,6 +112,7 @@ jobs:
           pkgs="$(grep -vE '^\s*($|#)' "${GITHUB_WORKSPACE}/${PACKAGES_FILE}" | tr '\n' ' ' | xargs)"
           echo "Custom packages : $pkgs"
           cd imagebuilder
+          sed -i '/^option check_signature$/d' repositories.conf
           make manifest \
             PROFILE="${OPENWRT_PROFILE}" \
             PACKAGES="$pkgs" \
@@ -125,6 +126,7 @@ jobs:
           pkgs="$(grep -vE '^\s*($|#)' "${GITHUB_WORKSPACE}/${PACKAGES_FILE}" | tr '\n' ' ' | xargs)"
           echo "Custom packages : $pkgs"
           cd imagebuilder
+          sed -i '/^option check_signature$/d' repositories.conf
           make image \
             PROFILE="${OPENWRT_PROFILE}" \
             PACKAGES="$pkgs" \
