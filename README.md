@@ -5,7 +5,7 @@
 [![Upstream](https://img.shields.io/badge/upstream-OpenWrt-00b5e2)](https://github.com/openwrt/openwrt)
 [![Target](https://img.shields.io/badge/target-x86%2F64-generic)](https://openwrt.org/)
 
-Build official OpenWrt x86_64 release images with a clean, release-based workflow.
+Build official OpenWrt x86_64 release images with a clean, release-based workflow. Supports Nikki feed integration for official release builds.
 
 ## Usage
 

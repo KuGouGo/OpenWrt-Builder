@@ -50,6 +50,31 @@ jobs:
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
           echo "file=$file" >> "$GITHUB_OUTPUT"
 
+      - name: Show build summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${{ steps.rel.outputs.ver }}"
+          nikki_feed="${NIKKI_FEED_BASE}/openwrt-${ver%.*}/x86_64/nikki/packages.adb"
+          pkg_count="$(grep -vE '^\s*($|#)' "${GITHUB_WORKSPACE}/${PACKAGES_FILE}" | wc -l | tr -d ' ')"
+          echo "OpenWrt version : $ver"
+          echo "Target          : ${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}"
+          echo "Profile         : ${OPENWRT_PROFILE}"
+          echo "Image           : ${OPENWRT_FS} ${OPENWRT_IMAGE}"
+          echo "Output          : openwrt-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}-${OPENWRT_PROFILE}-${OPENWRT_FS}-${OPENWRT_IMAGE}"
+          echo "Packages        : $pkg_count"
+          echo "Mirror          : ${MIRROR_BASE}"
+          echo "Nikki feed      : $nikki_feed"
+
+      - name: Check nikki feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${{ steps.rel.outputs.ver }}"
+          nikki_feed="${NIKKI_FEED_BASE}/openwrt-${ver%.*}/x86_64/nikki/packages.adb"
+          echo "Checking: $nikki_feed"
+          curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 60 -fI "$nikki_feed" >/dev/null
+
       - name: Download imagebuilder
         shell: bash
         run: |
@@ -126,6 +151,15 @@ jobs:
           title="OpenWrt ${ver} · x86_64 EFI Image"
           notes=$"Official OpenWrt ${ver} x86_64 image.\n\nDownload the attached image file below."
           if gh release view "$tag" >/dev/null 2>&1; then
+            existing_assets="$(gh release view "$tag" --json assets --jq '.assets[].name' || true)"
+            if [ -n "$existing_assets" ]; then
+              while IFS= read -r asset; do
+                [ -n "$asset" ] || continue
+                if [ "$asset" != "${{ steps.pick.outputs.name }}" ]; then
+                  gh release delete-asset "$tag" "$asset" -y || true
+                fi
+              done <<< "$existing_assets"
+            fi
             gh release upload "$tag" "${{ steps.pick.outputs.path }}" --clobber
           else
             gh release create "$tag" "${{ steps.pick.outputs.path }}" --title "$title" --notes "$notes"
