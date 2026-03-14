@@ -42,3 +42,4 @@ zoneinfo-asia
 -dnsmasq
 -libustream-mbedtls
 -nftables
+-mtd
