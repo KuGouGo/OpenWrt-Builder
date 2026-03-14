@@ -21,7 +21,7 @@ jobs:
       ROOTFS_PARTSIZE: 600
       KERNEL_PARTSIZE: 32
       BUILD_BASE: https://downloads.openwrt.org
-      FEEDS_MIRROR_BASE: https://mirrors.tuna.tsinghua.edu.cn/openwrt
+      FEEDS_MIRROR_BASE: https://downloads.openwrt.org
       PACKAGES_FILE: cfg/pkgs.txt
 
     steps:
@@ -63,7 +63,7 @@ jobs:
           echo "Output          : openwrt-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}-${OPENWRT_PROFILE}-${OPENWRT_FS}-${OPENWRT_IMAGE}"
           echo "Packages        : $pkg_count"
           echo "Build source    : ${BUILD_BASE}"
-          echo "Feeds mirror    : ${FEEDS_MIRROR_BASE}"
+          echo "Feeds source    : ${FEEDS_MIRROR_BASE}"
 
       - name: Fetch Nikki release packages
         shell: bash
