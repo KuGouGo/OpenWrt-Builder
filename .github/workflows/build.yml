@@ -73,7 +73,12 @@ jobs:
           ver="${{ steps.rel.outputs.ver }}"
           nikki_feed="${NIKKI_FEED_BASE}/openwrt-${ver%.*}/x86_64/nikki/packages.adb"
           echo "Checking: $nikki_feed"
-          curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 60 -fI "$nikki_feed" >/dev/null
+          code="$(curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 60 -o /dev/null -s -w "%{http_code}" "$nikki_feed")"
+          echo "HTTP status: $code"
+          if [ "$code" != "200" ]; then
+            echo "nikki feed unavailable: $nikki_feed" >&2
+            exit 1
+          fi
 
       - name: Download imagebuilder
         shell: bash
