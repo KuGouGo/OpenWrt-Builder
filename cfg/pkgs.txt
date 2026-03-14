@@ -18,17 +18,12 @@ libustream-openssl
 lsblk
 luci
 luci-app-firewall
-# Nikki packages - temporarily disabled (SNAPSHOT packages incompatible with stable 25.12)
-# See: https://github.com/nikkinikki1992/nikki.feed/issues/
-# luci-app-nikki
 luci-app-package-manager
 luci-i18n-base-zh-cn
 luci-i18n-firewall-zh-cn
-# luci-i18n-nikki-zh-cn
 luci-i18n-package-manager-zh-cn
 luci-mod-rpc
 nano
-# nikki
 nftables-json
 openssh-sftp-server
 owut

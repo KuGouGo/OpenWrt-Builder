@@ -22,7 +22,6 @@ jobs:
       ROOTFS_PARTSIZE: 600
       BUILD_BASE: https://downloads.openwrt.org
       PACKAGES_FILE: cfg/pkgs.txt
-      NIKKI_PACKAGES: ""  # Temporarily disabled - SNAPSHOT packages incompatible with stable releases
 
     steps:
       - name: Checkout
@@ -63,16 +62,6 @@ jobs:
           echo "Output          : openwrt-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}-${OPENWRT_PROFILE}-${OPENWRT_FS}-${OPENWRT_IMAGE}"
           echo "Packages        : $pkg_count"
           echo "Build source    : ${BUILD_BASE}"
-          echo "Nikki arch      : ${OPENWRT_ARCH}"
-
-      - name: Fetch Nikki feed packages
-        if: env.NIKKI_PACKAGES != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          ./scripts/fetch-nikki-release.sh "${{ steps.rel.outputs.ver }}" "${OPENWRT_ARCH}" "${NIKKI_PACKAGES}"
-          echo "--- files/tmp/nikki-feed ---"
-          find files/tmp/nikki-feed -maxdepth 2 -type f | sort || true
 
       - name: Download imagebuilder
         shell: bash
@@ -93,16 +82,8 @@ jobs:
           ver="${{ steps.rel.outputs.ver }}"
           mkdir -p imagebuilder/files imagebuilder/packages
           if [ -d files ]; then
-            rsync -a --exclude 'tmp/' files/ imagebuilder/files/
+            rsync -a files/ imagebuilder/files/
           fi
-          if [ -d files/tmp/nikki-feed ]; then
-            # Copy only apk/ipk files, not packages.adb (signature issues)
-            # Let imagebuilder generate its own package index
-            find files/tmp/nikki-feed -maxdepth 1 -type f \( -name '*.apk' -o -name '*.ipk' \) -exec cp -f {} imagebuilder/packages/ \;
-          fi
-          echo "--- imagebuilder/packages ---"
-          find imagebuilder/packages -maxdepth 1 -type f | sort || true
-          ls -lah imagebuilder/packages || true
           if [ -x scripts/tune.sh ]; then
             scripts/tune.sh imagebuilder "$ver"
           fi
@@ -133,16 +114,10 @@ jobs:
           set -euo pipefail
           mkdir -p diagnostics
           {
-            echo "== imagebuilder/packages =="
-            find imagebuilder/packages -maxdepth 1 -type f | sort || true
-            echo
             echo "== imagebuilder/bin/targets =="
             find imagebuilder/bin/targets -maxdepth 3 -type f | sort || true
           } > diagnostics/tree.txt
           cp -f cfg/pkgs.txt diagnostics/pkgs.txt
-          if [ -d files/tmp/nikki-feed ]; then
-            find files/tmp/nikki-feed -maxdepth 1 -type f | sort > diagnostics/nikki-feed.txt || true
-          fi
 
       - name: Upload diagnostics
         if: always()
@@ -178,7 +153,7 @@ jobs:
           tag="${{ steps.rel.outputs.tag }}"
           ver="${{ steps.rel.outputs.ver }}"
           title="OpenWrt ${ver} · x86_64 EFI Image"
-          notes=$"Official OpenWrt ${ver} x86_64 image.\n\nDownload the attached image file below."
+          notes=$"Official OpenWrt ${ver} x86_64 image.\n\nTo install Nikki, run on the device:\nwget -O - https://github.com/nikkinikki-org/OpenWrt-nikki/raw/refs/heads/main/feed.sh | ash\n\nDownload the attached image file below."
           if gh release view "$tag" >/dev/null 2>&1; then
             existing_assets="$(gh release view "$tag" --json assets --jq '.assets[].name' || true)"
             if [ -n "$existing_assets" ]; then

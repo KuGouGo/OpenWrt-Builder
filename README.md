@@ -5,18 +5,29 @@
 [![Upstream](https://img.shields.io/badge/upstream-OpenWrt-00b5e2)](https://github.com/openwrt/openwrt)
 [![Target](https://img.shields.io/badge/target-x86%2F64-generic)](https://openwrt.org/)
 
-Build official OpenWrt x86_64 release images with a clean, release-based workflow. Supports Nikki feed integration for official release builds.
-
-The workflow is intentionally optimized for x86_64 only. It follows the official Image Builder usage: custom packages are copied into `imagebuilder/packages/`, then Image Builder generates the local package index itself during `make image`. Nikki packages are fetched from the upstream Nikki feed (`nikkinikki.pages.dev`) based on the matching OpenWrt branch.
+Build official OpenWrt x86_64 release images with a clean, release-based workflow.
 
 ## Usage
 
 1. Edit package list: `cfg/pkgs.txt`
 2. Edit system config: `files/etc/config/system`
 3. Run workflow: `Actions -> build -> Run workflow`
-4. The workflow first runs `make manifest` as a dependency preflight
-5. Build diagnostics are uploaded as an artifact even if the job fails
-6. Download image from `Releases`
+4. Download image from `Releases`
+
+## Install Nikki
+
+After flashing the image, run this command on the device to add Nikki feed:
+
+```bash
+wget -O - https://github.com/nikkinikki-org/OpenWrt-nikki/raw/refs/heads/main/feed.sh | ash
+```
+
+Then install nikki packages:
+
+```bash
+apk update
+apk add nikki luci-app-nikki luci-i18n-nikki-zh-cn
+```
 
 ## Files
 
