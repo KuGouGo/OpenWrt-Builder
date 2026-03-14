@@ -95,19 +95,11 @@ jobs:
             rsync -a --exclude 'tmp/' files/ imagebuilder/files/
           fi
           if [ -d files/tmp/nikki-feed ]; then
-            find files/tmp/nikki-feed -maxdepth 1 -type f \( -name '*.apk' -o -name '*.ipk' -o -name 'packages.adb' -o -name 'index.json' \) -exec cp -f {} imagebuilder/packages/ \;
+            find files/tmp/nikki-feed -maxdepth 1 -type f \( -name '*.apk' -o -name '*.ipk' \) -exec cp -f {} imagebuilder/packages/ \;
           fi
           echo "--- imagebuilder/packages ---"
           find imagebuilder/packages -maxdepth 1 -type f | sort || true
           ls -lah imagebuilder/packages || true
-          mkdir -p imagebuilder/files/etc/apk/repositories.d
-          printf '%s\n' \
-            "${FEEDS_MIRROR_BASE}/releases/${ver}/packages/x86_64/base" \
-            "${FEEDS_MIRROR_BASE}/releases/${ver}/packages/x86_64/luci" \
-            "${FEEDS_MIRROR_BASE}/releases/${ver}/packages/x86_64/packages" \
-            "${FEEDS_MIRROR_BASE}/releases/${ver}/packages/x86_64/routing" \
-            "${FEEDS_MIRROR_BASE}/releases/${ver}/packages/x86_64/telephony" \
-            > imagebuilder/files/etc/apk/repositories.d/distfeeds.list
           if [ -x scripts/tune.sh ]; then
             scripts/tune.sh imagebuilder "$ver"
           fi
