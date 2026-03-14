@@ -112,10 +112,13 @@ jobs:
           pkgs="$(grep -vE '^\s*($|#)' "${GITHUB_WORKSPACE}/${PACKAGES_FILE}" | tr '\n' ' ' | xargs)"
           echo "Custom packages : $pkgs"
           cd imagebuilder
-          sed -i '/^option check_signature$/d' repositories.conf
+          if [ -f repositories.conf ]; then
+            sed -i '/^option check_signature$/d' repositories.conf
+          fi
           make manifest \
             PROFILE="${OPENWRT_PROFILE}" \
             PACKAGES="$pkgs" \
+            CONFIG_SIGNATURE_CHECK= \
             2>&1 | tee "${GITHUB_WORKSPACE}/diagnostics/manifest.log"
 
       - name: Build
@@ -126,12 +129,15 @@ jobs:
           pkgs="$(grep -vE '^\s*($|#)' "${GITHUB_WORKSPACE}/${PACKAGES_FILE}" | tr '\n' ' ' | xargs)"
           echo "Custom packages : $pkgs"
           cd imagebuilder
-          sed -i '/^option check_signature$/d' repositories.conf
+          if [ -f repositories.conf ]; then
+            sed -i '/^option check_signature$/d' repositories.conf
+          fi
           make image \
             PROFILE="${OPENWRT_PROFILE}" \
             PACKAGES="$pkgs" \
             FILES="files" \
             ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}" \
+            CONFIG_SIGNATURE_CHECK= \
             2>&1 | tee "${GITHUB_WORKSPACE}/diagnostics/build.log"
 
       - name: Collect diagnostics
