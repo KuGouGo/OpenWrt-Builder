@@ -9,9 +9,10 @@ VER="${1:?openwrt version required}"
 ARCH="${2:-x86_64}"
 PKGS="${3:-nikki luci-app-nikki luci-i18n-nikki-zh-cn}"
 
+# Nikki feed currently only provides SNAPSHOT branch
+# SNAPSHOT packages are compatible with stable releases
 case "$VER" in
-  24.10*) BRANCH="openwrt-24.10" ;;
-  25.12*) BRANCH="openwrt-25.12" ;;
+  24.10*|25.12*) BRANCH="SNAPSHOT" ;;
   *)
     echo "unsupported Nikki branch for OpenWrt version: $VER" >&2
     exit 1
