@@ -2,74 +2,148 @@ name: build
 
 on:
   workflow_dispatch:
+    inputs:
+      openwrt_version:
+        description: OpenWrt version (leave blank for latest official release)
+        required: false
+        type: string
+      rootfs_partsize:
+        description: Override root filesystem partition size in MB
+        required: false
+        type: string
+      package_file:
+        description: Override package list file path
+        required: false
+        type: string
+      disable_signature_check:
+        description: Disable package signature check (only for custom/unsigned feeds)
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
-  group: openwrt-x86_64-release
+  group: openwrt-build-${{ inputs.openwrt_version || 'latest' }}
   cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     permissions:
       contents: write
-    env:
-      OPENWRT_TARGET: x86
-      OPENWRT_SUBTARGET: 64
-      OPENWRT_ARCH: x86_64
-      OPENWRT_PROFILE: generic
-      OPENWRT_FS: squashfs
-      OPENWRT_IMAGE: combined-efi.img.gz
-      ROOTFS_PARTSIZE: 600
-      BUILD_BASE: https://downloads.openwrt.org
-      PACKAGES_FILE: cfg/pkgs.txt
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install deps
         run: |
           sudo apt-get update
           sudo apt-get install -y curl jq tar zstd rsync gh
 
-      - name: Get latest release
-        id: rel
+      - name: Resolve metadata
+        id: meta
         shell: bash
         run: |
           set -euo pipefail
-          json="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL https://api.github.com/repos/openwrt/openwrt/releases/latest)"
-          tag="$(printf '%s' "$json" | jq -r '.tag_name')"
-          ver="${tag#v}"
-          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
-            echo "failed to get latest official release" >&2
+
+          config_file="${GITHUB_WORKSPACE}/config/build.conf"
+          if [ ! -f "$config_file" ]; then
+            echo "missing config/build.conf" >&2
             exit 1
           fi
-          file="openwrt-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}-${OPENWRT_PROFILE}-${OPENWRT_FS}-${OPENWRT_IMAGE}"
+
+          set -a
+          # shellcheck disable=SC1091
+          . "$config_file"
+          set +a
+
+          : "${OPENWRT_TARGET:?missing OPENWRT_TARGET}"
+          : "${OPENWRT_SUBTARGET:?missing OPENWRT_SUBTARGET}"
+          : "${OPENWRT_PROFILE:?missing OPENWRT_PROFILE}"
+          : "${OPENWRT_FS:?missing OPENWRT_FS}"
+          : "${OPENWRT_IMAGE:?missing OPENWRT_IMAGE}"
+          : "${ROOTFS_PARTSIZE:?missing ROOTFS_PARTSIZE}"
+          : "${BUILD_BASE:?missing BUILD_BASE}"
+          : "${PACKAGES_FILE:?missing PACKAGES_FILE}"
+
+          req_ver="${{ inputs.openwrt_version }}"
+          if [ -n "$req_ver" ]; then
+            ver="${req_ver#v}"
+            tag="v${ver}"
+          else
+            json="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL https://api.github.com/repos/openwrt/openwrt/releases/latest)"
+            tag="$(printf '%s' "$json" | jq -r '.tag_name')"
+            ver="${tag#v}"
+            if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+              echo "failed to get latest official release" >&2
+              exit 1
+            fi
+          fi
+
+          rootfs_partsize="${{ inputs.rootfs_partsize }}"
+          package_file="${{ inputs.package_file }}"
+          if [ -z "$rootfs_partsize" ]; then
+            rootfs_partsize="$ROOTFS_PARTSIZE"
+          fi
+          if [ -z "$package_file" ]; then
+            package_file="$PACKAGES_FILE"
+          fi
+
+          if ! [[ "$rootfs_partsize" =~ ^[0-9]+$ ]]; then
+            echo "rootfs_partsize must be an integer: $rootfs_partsize" >&2
+            exit 1
+          fi
+
+          if [ ! -f "${GITHUB_WORKSPACE}/${package_file}" ]; then
+            echo "package file not found: ${package_file}" >&2
+            exit 1
+          fi
+
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
-          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "target=$OPENWRT_TARGET" >> "$GITHUB_OUTPUT"
+          echo "subtarget=$OPENWRT_SUBTARGET" >> "$GITHUB_OUTPUT"
+          echo "profile=$OPENWRT_PROFILE" >> "$GITHUB_OUTPUT"
+          echo "fs=$OPENWRT_FS" >> "$GITHUB_OUTPUT"
+          echo "image=$OPENWRT_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "build_base=$BUILD_BASE" >> "$GITHUB_OUTPUT"
+          echo "rootfs_partsize=$rootfs_partsize" >> "$GITHUB_OUTPUT"
+          echo "package_file=$package_file" >> "$GITHUB_OUTPUT"
+          echo "disable_signature_check=${{ inputs.disable_signature_check }}" >> "$GITHUB_OUTPUT"
+          echo "imagebuilder_file=openwrt-imagebuilder-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}.Linux-x86_64.tar.zst" >> "$GITHUB_OUTPUT"
+          echo "image_file=openwrt-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}-${OPENWRT_PROFILE}-${OPENWRT_FS}-${OPENWRT_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "target_dir=imagebuilder/bin/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}" >> "$GITHUB_OUTPUT"
 
-      - name: Show build summary
+      - name: Build summary
         shell: bash
         run: |
           set -euo pipefail
-          ver="${{ steps.rel.outputs.ver }}"
-          pkg_count="$(grep -vE '^\s*($|#)' "${GITHUB_WORKSPACE}/${PACKAGES_FILE}" | wc -l | tr -d ' ')"
-          echo "OpenWrt version : $ver"
-          echo "Target          : ${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}"
-          echo "Profile         : ${OPENWRT_PROFILE}"
-          echo "Image           : ${OPENWRT_FS} ${OPENWRT_IMAGE}"
-          echo "Output          : openwrt-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}-${OPENWRT_PROFILE}-${OPENWRT_FS}-${OPENWRT_IMAGE}"
-          echo "Packages        : $pkg_count"
-          echo "Build source    : ${BUILD_BASE}"
+          pkg_count="$(awk '
+            {
+              sub(/\r$/, "")
+              sub(/[[:space:]]*#.*/, "")
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+            }
+            NF && !seen[$0]++ { count++ }
+            END { print count + 0 }
+          ' "${GITHUB_WORKSPACE}/${{ steps.meta.outputs.package_file }}")"
+
+          echo "OpenWrt version        : ${{ steps.meta.outputs.ver }}"
+          echo "Target                 : ${{ steps.meta.outputs.target }}/${{ steps.meta.outputs.subtarget }}"
+          echo "Profile                : ${{ steps.meta.outputs.profile }}"
+          echo "Image                  : ${{ steps.meta.outputs.fs }} ${{ steps.meta.outputs.image }}"
+          echo "Rootfs size            : ${{ steps.meta.outputs.rootfs_partsize }} MB"
+          echo "Packages file          : ${{ steps.meta.outputs.package_file }}"
+          echo "Unique package entries : $pkg_count"
+          echo "Signature check        : ${{ steps.meta.outputs.disable_signature_check == 'true' && 'disabled' || 'enabled' }}"
+          echo "Build source           : ${{ steps.meta.outputs.build_base }}"
+          echo "Output                 : ${{ steps.meta.outputs.image_file }}"
 
       - name: Download imagebuilder
         shell: bash
         run: |
           set -euo pipefail
-          ver="${{ steps.rel.outputs.ver }}"
-          file="openwrt-imagebuilder-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}.Linux-x86_64.tar.zst"
-          url="${BUILD_BASE}/releases/${ver}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/${file}"
+          url="${{ steps.meta.outputs.build_base }}/releases/${{ steps.meta.outputs.ver }}/targets/${{ steps.meta.outputs.target }}/${{ steps.meta.outputs.subtarget }}/${{ steps.meta.outputs.imagebuilder_file }}"
           echo "Downloading imagebuilder: $url"
           curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 180 -fL "$url" -o ib.tar.zst
           tar --zstd -xf ib.tar.zst
@@ -79,33 +153,65 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ver="${{ steps.rel.outputs.ver }}"
-          mkdir -p imagebuilder/files imagebuilder/packages
+          mkdir -p imagebuilder/files diagnostics
           if [ -d files ]; then
             rsync -a files/ imagebuilder/files/
           fi
-          if [ -x scripts/tune.sh ]; then
-            scripts/tune.sh imagebuilder "$ver"
-          fi
 
-      - name: Build
+      - name: Configure signature policy
+        if: ${{ inputs.disable_signature_check }}
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p diagnostics
-          pkgs="$(grep -vE '^\s*($|#)' "${GITHUB_WORKSPACE}/${PACKAGES_FILE}" | tr '\n' ' ' | xargs)"
-          echo "Custom packages : $pkgs"
           cd imagebuilder
-          if [ -f repositories.conf ]; then
-            sed -i '/^option check_signature$/d' repositories.conf
+          if [ ! -f repositories ]; then
+            echo "expected new ImageBuilder layout: missing repositories file" >&2
+            exit 1
           fi
-          make image \
-            PROFILE="${OPENWRT_PROFILE}" \
-            PACKAGES="$pkgs" \
-            FILES="files" \
-            ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}" \
-            CONFIG_SIGNATURE_CHECK= \
-            2>&1 | tee "${GITHUB_WORKSPACE}/diagnostics/build.log"
+          cp -f repositories repositories.orig
+
+      - name: Build image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pkg_file="${GITHUB_WORKSPACE}/${{ steps.meta.outputs.package_file }}"
+          resolved_pkg_file="${GITHUB_WORKSPACE}/diagnostics/packages.resolved.txt"
+          : > "$resolved_pkg_file"
+
+          mapfile -t pkg_array < <(awk '
+            {
+              sub(/\r$/, "")
+              sub(/[[:space:]]*#.*/, "")
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+            }
+            NF && !seen[$0]++ { print }
+          ' "$pkg_file")
+
+          pkgs=""
+          if [ ${#pkg_array[@]} -gt 0 ]; then
+            printf '%s\n' "${pkg_array[@]}" > "$resolved_pkg_file"
+            pkgs="$(printf '%s\n' "${pkg_array[@]}" | paste -sd' ' -)"
+          fi
+
+          cd imagebuilder
+
+          make_args=(
+            image
+            PROFILE="${{ steps.meta.outputs.profile }}"
+            FILES="files"
+            ROOTFS_PARTSIZE="${{ steps.meta.outputs.rootfs_partsize }}"
+          )
+
+          if [ -n "$pkgs" ]; then
+            make_args+=(PACKAGES="$pkgs")
+          fi
+
+          if [ "${{ steps.meta.outputs.disable_signature_check }}" = "true" ]; then
+            make_args+=(CONFIG_SIGNATURE_CHECK=)
+          fi
+
+          make -j"$(nproc)" "${make_args[@]}" 2>&1 | tee "${GITHUB_WORKSPACE}/diagnostics/build.log"
 
       - name: Collect diagnostics
         if: always()
@@ -113,58 +219,95 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p diagnostics
-          {
-            echo "== imagebuilder/bin/targets =="
-            find imagebuilder/bin/targets -maxdepth 3 -type f | sort || true
-          } > diagnostics/tree.txt
-          cp -f cfg/pkgs.txt diagnostics/pkgs.txt
 
-      - name: Upload diagnostics
-        if: always()
+          cat > diagnostics/build.txt <<EOF
+          version=${{ steps.meta.outputs.ver }}
+          tag=${{ steps.meta.outputs.tag }}
+          target=${{ steps.meta.outputs.target }}/${{ steps.meta.outputs.subtarget }}
+          profile=${{ steps.meta.outputs.profile }}
+          image=${{ steps.meta.outputs.fs }} ${{ steps.meta.outputs.image }}
+          rootfs_partsize=${{ steps.meta.outputs.rootfs_partsize }}
+          package_file=${{ steps.meta.outputs.package_file }}
+          build_base=${{ steps.meta.outputs.build_base }}
+          disable_signature_check=${{ steps.meta.outputs.disable_signature_check }}
+          EOF
+
+          find imagebuilder/bin/targets -maxdepth 3 -type f | sort > diagnostics/tree.txt || true
+          cp -f "${{ steps.meta.outputs.package_file }}" diagnostics/packages.list
+          cp -f config/build.conf diagnostics/build.conf
+
+          for repo_file in imagebuilder/repositories imagebuilder/repositories.orig; do
+            [ -f "$repo_file" ] || continue
+            cp -f "$repo_file" diagnostics/
+          done
+
+      - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-diagnostics
+          name: diagnostics
           path: diagnostics/
           if-no-files-found: warn
 
-      - name: Pick final image
+      - name: Pick image
         id: pick
         shell: bash
         run: |
           set -euo pipefail
-          want="${{ steps.rel.outputs.file }}"
-          src="$(find "imagebuilder/bin/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}" -type f -name "*${OPENWRT_PROFILE}*${OPENWRT_FS}*${OPENWRT_IMAGE}" | head -n 1)"
-          if [ -z "$src" ]; then
+          want="${{ steps.meta.outputs.image_file }}"
+          dir="${{ steps.meta.outputs.target_dir }}"
+          src="${dir}/${want}"
+
+          if [ ! -f "$src" ]; then
+            src="$(find "$dir" -maxdepth 1 -type f -name "*${{ steps.meta.outputs.profile }}*${{ steps.meta.outputs.fs }}*${{ steps.meta.outputs.image }}" | sort | head -n 1)"
+          fi
+
+          if [ -z "$src" ] || [ ! -f "$src" ]; then
             echo "final image not found" >&2
             find imagebuilder/bin/targets -maxdepth 3 -type f | sort >&2 || true
             exit 1
           fi
+
           mkdir -p out
           cp -f "$src" "out/$want"
+          sha256sum "out/$want" > "out/$want.sha256"
           echo "path=out/$want" >> "$GITHUB_OUTPUT"
           echo "name=$want" >> "$GITHUB_OUTPUT"
+          echo "sha256=out/$want.sha256" >> "$GITHUB_OUTPUT"
+
+      - if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pick.outputs.name }}
+          path: |
+            ${{ steps.pick.outputs.path }}
+            ${{ steps.pick.outputs.sha256 }}
+          if-no-files-found: error
 
       - name: Publish release
+        if: success()
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          tag="${{ steps.rel.outputs.tag }}"
-          ver="${{ steps.rel.outputs.ver }}"
+          tag="${{ steps.meta.outputs.tag }}"
+          ver="${{ steps.meta.outputs.ver }}"
           title="OpenWrt ${ver} · x86_64 EFI Image"
-          notes=$"Official OpenWrt ${ver} x86_64 image.\n\nTo install Nikki, run on the device:\nwget -O - https://github.com/nikkinikki-org/OpenWrt-nikki/raw/refs/heads/main/feed.sh | ash\n\nDownload the attached image file below."
+
+          cat > release-notes.txt <<EOF
+          Official OpenWrt ${ver} x86_64 image built with ImageBuilder.
+
+          - Target: ${{ steps.meta.outputs.target }}/${{ steps.meta.outputs.subtarget }}
+          - Profile: ${{ steps.meta.outputs.profile }}
+          - Image: ${{ steps.meta.outputs.fs }} ${{ steps.meta.outputs.image }}
+          - Rootfs size: ${{ steps.meta.outputs.rootfs_partsize }} MB
+          - Package list: ${{ steps.meta.outputs.package_file }}
+          - Signature check: ${{ steps.meta.outputs.disable_signature_check == 'true' && 'disabled' || 'enabled' }}
+          EOF
+
           if gh release view "$tag" >/dev/null 2>&1; then
-            existing_assets="$(gh release view "$tag" --json assets --jq '.assets[].name' || true)"
-            if [ -n "$existing_assets" ]; then
-              while IFS= read -r asset; do
-                [ -n "$asset" ] || continue
-                if [ "$asset" != "${{ steps.pick.outputs.name }}" ]; then
-                  gh release delete-asset "$tag" "$asset" -y || true
-                fi
-              done <<< "$existing_assets"
-            fi
-            gh release upload "$tag" "${{ steps.pick.outputs.path }}" --clobber
+            gh release upload "$tag" "${{ steps.pick.outputs.path }}" "${{ steps.pick.outputs.sha256 }}" --clobber
+            gh release edit "$tag" --title "$title" --notes-file release-notes.txt
           else
-            gh release create "$tag" "${{ steps.pick.outputs.path }}" --title "$title" --notes "$notes"
+            gh release create "$tag" "${{ steps.pick.outputs.path }}" "${{ steps.pick.outputs.sha256 }}" --title "$title" --notes-file release-notes.txt
           fi

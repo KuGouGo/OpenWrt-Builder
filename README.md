@@ -5,39 +5,59 @@
 [![Upstream](https://img.shields.io/badge/upstream-OpenWrt-00b5e2)](https://github.com/openwrt/openwrt)
 [![Target](https://img.shields.io/badge/target-x86%2F64-generic)](https://openwrt.org/)
 
-Build official OpenWrt x86_64 release images with a clean, release-based workflow.
+Build official OpenWrt x86_64 release images with a small, release-based workflow.
 
-## Usage
-
-1. Edit package list: `cfg/pkgs.txt`
-2. Edit system config: `files/etc/config/system`
-3. Run workflow: `Actions -> build -> Run workflow`
-4. Download image from `Releases`
-
-## Install Nikki
-
-After flashing the image, run this command on the device to add Nikki feed:
-
-```bash
-wget -O - https://github.com/nikkinikki-org/OpenWrt-nikki/raw/refs/heads/main/feed.sh | ash
-```
-
-Then install nikki packages:
-
-```bash
-apk update
-apk add nikki luci-app-nikki luci-i18n-nikki-zh-cn
-```
-
-## Files
+## Layout
 
 ```txt
 .github/workflows/build.yml
-cfg/pkgs.txt
-files/etc/config/system
-files/etc/defaults/10-model
-scripts/tune.sh
+config/build.conf
+config/packages.list
+files/
+README.md
 ```
+
+- `config/build.conf`: static build target config
+- `config/packages.list`: package list
+- `files/`: files copied into the final image
+- `.github/workflows/build.yml`: build and release pipeline
+
+## Build flow
+
+1. Resolve OpenWrt version
+2. Load build settings from `config/build.conf`
+3. Download matching official ImageBuilder
+4. Copy `files/` into ImageBuilder
+5. Parse `config/packages.list`
+6. Build image
+7. Upload diagnostics and release assets
+
+## Workflow inputs
+
+- `openwrt_version`: build a specific official release, e.g. `24.10.0`
+- `rootfs_partsize`: override the default from `config/build.conf`
+- `package_file`: override the default from `config/build.conf`
+- `disable_signature_check`: only for unsigned/custom feeds
+
+## Build config
+
+```conf
+OPENWRT_TARGET=x86
+OPENWRT_SUBTARGET=64
+OPENWRT_PROFILE=generic
+OPENWRT_FS=squashfs
+OPENWRT_IMAGE=combined-efi.img.gz
+ROOTFS_PARTSIZE=600
+BUILD_BASE=https://downloads.openwrt.org
+PACKAGES_FILE=config/packages.list
+```
+
+## Notes
+
+- Targets new ImageBuilder layout (`repositories`)
+- Uses official OpenWrt release ImageBuilder, not full source compilation
+- Keeps diagnostics even on build failure
+- Prefers exact image filename, then safe fallback match
 
 ## Download
 
