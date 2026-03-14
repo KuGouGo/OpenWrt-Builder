@@ -117,6 +117,7 @@ jobs:
         run: |
           set -euo pipefail
           pkgs="$(grep -vE '^\s*($|#)' "${GITHUB_WORKSPACE}/${PACKAGES_FILE}" | tr '\n' ' ' | xargs)"
+          echo "Custom packages : $pkgs"
           cd imagebuilder
           make image \
             PROFILE="${OPENWRT_PROFILE}" \
