@@ -22,7 +22,7 @@ trap 'rm -rf "$TMP"' EXIT
 curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 180 -fL "$URL" -o "$TMP/nikki.tar.gz"
 rm -rf "$NIKKI_DIR"/*
 tar -xzf "$TMP/nikki.tar.gz" -C "$NIKKI_DIR"
-
+rm -f "$NIKKI_DIR/packages.adb" "$NIKKI_DIR/index.json"
 
 echo "Fetched Nikki release: $TAG"
 echo "Asset: $ASSET"

@@ -1,6 +1,9 @@
 apk-openssl
 bash
 block-mount
+mtd
+libblobmsg-json20260213
+libubox20260213
 curl
 dnsmasq-full
 ethtool
