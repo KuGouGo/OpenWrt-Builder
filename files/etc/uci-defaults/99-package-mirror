@@ -1,0 +1,10 @@
+#!/bin/sh
+
+mirror='https://mirrors.ustc.edu.cn/openwrt'
+
+for f in /etc/opkg/distfeeds.conf /etc/apk/repositories /etc/apk/repositories.d/*.list; do
+    [ -f "$f" ] || continue
+    sed -i "s#https\?://downloads.openwrt.org#${mirror}#g" "$f"
+done
+
+exit 0

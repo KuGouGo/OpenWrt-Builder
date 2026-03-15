@@ -57,6 +57,7 @@ PACKAGES_FILE=config/packages.list
 - Uses official OpenWrt release ImageBuilder, not full source compilation
 - Keeps diagnostics even on build failure
 - Prefers exact image filename, then safe fallback match
+- Rewrites package feeds to the USTC mirror on first boot via `files/etc/uci-defaults/99-package-mirror`
 - `files/etc/sysctl.conf` contains device-specific tuning for the maintainer's x86_64 host
 - `sing-box` is preinstalled but disabled by default
 
