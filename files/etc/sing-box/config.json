@@ -1,9 +1,0 @@
-{
-  "log": {
-    "level": "info"
-  },
-  "dns": {},
-  "inbounds": [],
-  "outbounds": [],
-  "route": {}
-}
