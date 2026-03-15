@@ -25,14 +25,12 @@ README.md
 ## Build flow
 
 1. Fetch latest official OpenWrt release
-2. Fetch latest stable `sing-box` source when requested
-3. Load build settings from `config/build.conf`
-4. Download the matching official ImageBuilder
-5. Build a local `sing-box` APK through `openwrt/gh-action-sdk`
-6. Copy `files/` into ImageBuilder
-7. Parse `config/packages.list`
-8. Build image
-9. Upload diagnostics and release assets
+2. Load build settings from `config/build.conf`
+3. Download the matching official ImageBuilder
+4. Copy `files/` into ImageBuilder
+5. Parse `config/packages.list`
+6. Build image with packages from the official OpenWrt repositories
+7. Upload diagnostics and release assets
 
 ## Trigger
 
@@ -63,7 +61,7 @@ PACKAGES_FILE=config/packages.list
 - Preloads deterministic system config from `files/etc/config/`
 - Rewrites APK repositories to the USTC mirror on first boot via `files/etc/uci-defaults/99-package-mirror`
 - Enables a boot-time model normalization service to replace placeholder x86 DMI model names with more useful values
-- If `sing-box` is present in `config/packages.list`, the workflow renders a temporary feed and builds a matching local APK through `openwrt/gh-action-sdk`, then injects it via ImageBuilder's local APK repository
+- Packages listed in `config/packages.list` are pulled directly from the matching official OpenWrt repositories during the ImageBuilder run
 
 ## Download
 

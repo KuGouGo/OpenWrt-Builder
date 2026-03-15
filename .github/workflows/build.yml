@@ -71,16 +71,6 @@ jobs:
             exit 1
           fi
 
-          sing_box_json="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest)"
-          sing_box_tag="$(printf '%s' "$sing_box_json" | jq -r '.tag_name')"
-          sing_box_ver="${sing_box_tag#v}"
-          sing_box_source_url="https://codeload.github.com/SagerNet/sing-box/tar.gz/${sing_box_tag}"
-          sing_box_hash="$(curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 180 -fL "$sing_box_source_url" | sha256sum | awk '{print $1}')"
-          if [ -z "$sing_box_hash" ]; then
-            echo "failed to compute latest stable sing-box source hash" >&2
-            exit 1
-          fi
-
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
           echo "target=$OPENWRT_TARGET" >> "$GITHUB_OUTPUT"
@@ -93,11 +83,7 @@ jobs:
           echo "build_base=$BUILD_BASE" >> "$GITHUB_OUTPUT"
           echo "rootfs_partsize=$ROOTFS_PARTSIZE" >> "$GITHUB_OUTPUT"
           echo "package_file=$PACKAGES_FILE" >> "$GITHUB_OUTPUT"
-          echo "sing_box_tag=$sing_box_tag" >> "$GITHUB_OUTPUT"
-          echo "sing_box_ver=$sing_box_ver" >> "$GITHUB_OUTPUT"
-          echo "sing_box_hash=$sing_box_hash" >> "$GITHUB_OUTPUT"
           echo "imagebuilder_file=openwrt-imagebuilder-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}.Linux-x86_64.tar.zst" >> "$GITHUB_OUTPUT"
-          echo "sdk_arch=x86_64-${ver}" >> "$GITHUB_OUTPUT"
           echo "target_dir=imagebuilder/bin/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}" >> "$GITHUB_OUTPUT"
 
       - name: Build summary
@@ -119,7 +105,6 @@ jobs:
           echo "Profile                : ${{ steps.meta.outputs.profile }}"
           echo "Images                 : ${{ steps.meta.outputs.fs }} ${{ steps.meta.outputs.images }}"
           echo "Rootfs size            : ${{ steps.meta.outputs.rootfs_partsize }} MB"
-          echo "Latest sing-box        : ${{ steps.meta.outputs.sing_box_tag }}"
           echo "Packages file          : ${{ steps.meta.outputs.package_file }}"
           echo "Unique package entries : $pkg_count"
           echo "Build source           : ${{ steps.meta.outputs.build_base }}"
@@ -139,71 +124,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p imagebuilder/files imagebuilder/packages diagnostics sdk-artifacts sdk-feed
+          mkdir -p imagebuilder/files diagnostics
           if [ -d files ]; then
             rsync -a files/ imagebuilder/files/
-          fi
-
-      - name: Render custom sing-box feed
-        id: singbox-feed
-        shell: bash
-        run: |
-          set -euo pipefail
-          pkg_file="${GITHUB_WORKSPACE}/${{ steps.meta.outputs.package_file }}"
-          if ! awk '
-            {
-              sub(/\r$/, "")
-              sub(/[[:space:]]*#.*/, "")
-              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
-            }
-            $0 == "sing-box" { found=1 }
-            END { exit found ? 0 : 1 }
-          ' "$pkg_file"; then
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "sing-box not requested; skipping sdk build"
-            exit 0
-          fi
-
-          rm -rf sdk-feed/*
-          mkdir -p sdk-feed/net/sing-box/files
-          sed \
-            -e "s/@SING_BOX_VERSION@/${{ steps.meta.outputs.sing_box_ver }}/g" \
-            -e "s/@SING_BOX_HASH@/${{ steps.meta.outputs.sing_box_hash }}/g" \
-            "${GITHUB_WORKSPACE}/packages/net/sing-box/Makefile.in" > sdk-feed/net/sing-box/Makefile
-          cp -f "${GITHUB_WORKSPACE}/packages/net/sing-box/files/sing-box.conf" sdk-feed/net/sing-box/files/sing-box.conf
-          cp -f "${GITHUB_WORKSPACE}/packages/net/sing-box/files/sing-box.init" sdk-feed/net/sing-box/files/sing-box.init
-          echo "enabled=true" >> "$GITHUB_OUTPUT"
-
-      - name: Build custom sing-box package
-        if: steps.singbox-feed.outputs.enabled == 'true'
-        uses: openwrt/gh-action-sdk@main
-        env:
-          ARCH: ${{ steps.meta.outputs.sdk_arch }}
-          FEED_DIR: ${{ github.workspace }}/sdk-feed
-          ARTIFACTS_DIR: ${{ github.workspace }}/sdk-artifacts
-          PACKAGES: sing-box
-          INDEX: 1
-          BUILD_LOG: 1
-          NO_REFRESH_CHECK: 1
-          NO_SHFMT_CHECK: 1
-          V: s
-
-      - name: Import custom sing-box package
-        if: steps.singbox-feed.outputs.enabled == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          built_apk="$(find sdk-artifacts/bin/packages -type f -name 'sing-box_*.apk' | sort | head -n 1)"
-          if [ -z "$built_apk" ] || [ ! -f "$built_apk" ]; then
-            echo "custom sing-box apk not found after sdk build" >&2
-            find sdk-artifacts -type f | sort >&2 || true
-            exit 1
-          fi
-
-          cp -f "$built_apk" "${GITHUB_WORKSPACE}/imagebuilder/packages/"
-          sha256sum "${GITHUB_WORKSPACE}/imagebuilder/packages/$(basename "$built_apk")" | tee "${GITHUB_WORKSPACE}/diagnostics/sing-box.sha256"
-          if [ -d sdk-artifacts/logs ]; then
-            find sdk-artifacts/logs -type f | sort > "${GITHUB_WORKSPACE}/diagnostics/sing-box-sdk-logs.txt"
           fi
 
       - name: Build image
@@ -260,9 +183,6 @@ jobs:
           images=${{ steps.meta.outputs.fs }} ${{ steps.meta.outputs.images }}
           rootfs_partsize=${{ steps.meta.outputs.rootfs_partsize }}
           package_file=${{ steps.meta.outputs.package_file }}
-          sing_box_tag=${{ steps.meta.outputs.sing_box_tag }}
-          sing_box_hash=${{ steps.meta.outputs.sing_box_hash }}
-          sdk_arch=${{ steps.meta.outputs.sdk_arch }}
           build_base=${{ steps.meta.outputs.build_base }}
           EOF
 
@@ -270,8 +190,6 @@ jobs:
           cp -f "${{ steps.meta.outputs.package_file }}" diagnostics/packages.list
           cp -f config/build.conf diagnostics/build.conf
           [ -f imagebuilder/repositories ] && cp -f imagebuilder/repositories diagnostics/
-          find sdk-artifacts/bin/packages -type f | sort > diagnostics/sdk-packages.txt || true
-          find imagebuilder/packages -maxdepth 1 -type f | sort > diagnostics/local-packages.txt || true
 
       - if: always()
         uses: actions/upload-artifact@v4
@@ -342,7 +260,6 @@ jobs:
           - Profile: ${{ steps.meta.outputs.profile }}
           - Images: ${{ steps.meta.outputs.fs }} ${{ steps.meta.outputs.images }}
           - Rootfs size: ${{ steps.meta.outputs.rootfs_partsize }} MB
-          - sing-box: ${{ steps.meta.outputs.sing_box_tag }}
           - Package list: ${{ steps.meta.outputs.package_file }}
           EOF
 
