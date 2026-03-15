@@ -43,10 +43,15 @@ jobs:
           : "${OPENWRT_SUBTARGET:?missing OPENWRT_SUBTARGET}"
           : "${OPENWRT_PROFILE:?missing OPENWRT_PROFILE}"
           : "${OPENWRT_FS:?missing OPENWRT_FS}"
-          : "${OPENWRT_IMAGE:?missing OPENWRT_IMAGE}"
           : "${ROOTFS_PARTSIZE:?missing ROOTFS_PARTSIZE}"
           : "${BUILD_BASE:?missing BUILD_BASE}"
           : "${PACKAGES_FILE:?missing PACKAGES_FILE}"
+
+          image_names="${OPENWRT_IMAGES:-${OPENWRT_IMAGE:-}}"
+          if [ -z "$image_names" ]; then
+            echo "missing OPENWRT_IMAGES or OPENWRT_IMAGE" >&2
+            exit 1
+          fi
 
           if ! [[ "$ROOTFS_PARTSIZE" =~ ^[0-9]+$ ]]; then
             echo "ROOTFS_PARTSIZE must be an integer: $ROOTFS_PARTSIZE" >&2
@@ -66,18 +71,34 @@ jobs:
             exit 1
           fi
 
+          sing_box_json="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest)"
+          sing_box_tag="$(printf '%s' "$sing_box_json" | jq -r '.tag_name')"
+          sing_box_ver="${sing_box_tag#v}"
+          sing_box_asset_name="$(printf '%s' "$sing_box_json" | jq -r '.assets[] | select(.name | test("^sing-box_.+_openwrt_x86_64\\.apk$")) | .name' | head -n 1)"
+          sing_box_asset_url="$(printf '%s' "$sing_box_json" | jq -r '.assets[] | select(.name | test("^sing-box_.+_openwrt_x86_64\\.apk$")) | .browser_download_url' | head -n 1)"
+          if [ -z "$sing_box_asset_name" ] || [ -z "$sing_box_asset_url" ]; then
+            echo "failed to find latest stable sing-box OpenWrt x86_64 APK asset" >&2
+            exit 1
+          fi
+
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
           echo "target=$OPENWRT_TARGET" >> "$GITHUB_OUTPUT"
           echo "subtarget=$OPENWRT_SUBTARGET" >> "$GITHUB_OUTPUT"
           echo "profile=$OPENWRT_PROFILE" >> "$GITHUB_OUTPUT"
           echo "fs=$OPENWRT_FS" >> "$GITHUB_OUTPUT"
-          echo "image=$OPENWRT_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "images<<EOF" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$image_names" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
           echo "build_base=$BUILD_BASE" >> "$GITHUB_OUTPUT"
           echo "rootfs_partsize=$ROOTFS_PARTSIZE" >> "$GITHUB_OUTPUT"
           echo "package_file=$PACKAGES_FILE" >> "$GITHUB_OUTPUT"
+          echo "sing_box_tag=$sing_box_tag" >> "$GITHUB_OUTPUT"
+          echo "sing_box_ver=$sing_box_ver" >> "$GITHUB_OUTPUT"
+          echo "sing_box_asset_name=$sing_box_asset_name" >> "$GITHUB_OUTPUT"
+          echo "sing_box_asset_url=$sing_box_asset_url" >> "$GITHUB_OUTPUT"
           echo "imagebuilder_file=openwrt-imagebuilder-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}.Linux-x86_64.tar.zst" >> "$GITHUB_OUTPUT"
-          echo "image_file=openwrt-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}-${OPENWRT_PROFILE}-${OPENWRT_FS}-${OPENWRT_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "sdk_file=openwrt-sdk-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}_gcc-14.3.0_musl.Linux-x86_64.tar.zst" >> "$GITHUB_OUTPUT"
           echo "target_dir=imagebuilder/bin/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}" >> "$GITHUB_OUTPUT"
 
       - name: Build summary
@@ -97,12 +118,13 @@ jobs:
           echo "OpenWrt version        : ${{ steps.meta.outputs.ver }}"
           echo "Target                 : ${{ steps.meta.outputs.target }}/${{ steps.meta.outputs.subtarget }}"
           echo "Profile                : ${{ steps.meta.outputs.profile }}"
-          echo "Image                  : ${{ steps.meta.outputs.fs }} ${{ steps.meta.outputs.image }}"
+          echo "Images                 : ${{ steps.meta.outputs.fs }} ${{ steps.meta.outputs.images }}"
           echo "Rootfs size            : ${{ steps.meta.outputs.rootfs_partsize }} MB"
+          echo "Latest sing-box        : ${{ steps.meta.outputs.sing_box_tag }}"
           echo "Packages file          : ${{ steps.meta.outputs.package_file }}"
           echo "Unique package entries : $pkg_count"
           echo "Build source           : ${{ steps.meta.outputs.build_base }}"
-          echo "Output                 : ${{ steps.meta.outputs.image_file }}"
+          echo "Output dir             : out/"
 
       - name: Download imagebuilder
         shell: bash
@@ -118,10 +140,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p imagebuilder/files diagnostics
+          mkdir -p imagebuilder/files imagebuilder/packages diagnostics
           if [ -d files ]; then
             rsync -a files/ imagebuilder/files/
           fi
+
+      - name: Download custom APK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pkg_file="${GITHUB_WORKSPACE}/${{ steps.meta.outputs.package_file }}"
+          if ! awk '
+            {
+              sub(/\r$/, "")
+              sub(/[[:space:]]*#.*/, "")
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+            }
+            $0 == "sing-box" { found=1 }
+            END { exit found ? 0 : 1 }
+          ' "$pkg_file"; then
+            echo "sing-box not requested; skipping custom APK download"
+            exit 0
+          fi
+
+          dst="imagebuilder/packages/${{ steps.meta.outputs.sing_box_asset_name }}"
+          echo "Downloading latest stable sing-box APK: ${{ steps.meta.outputs.sing_box_asset_name }}"
+          curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 180 -fL \
+            "${{ steps.meta.outputs.sing_box_asset_url }}" \
+            -o "$dst"
+          sha256sum "$dst" | tee "${GITHUB_WORKSPACE}/diagnostics/sing-box.sha256"
 
       - name: Build image
         shell: bash
@@ -174,9 +222,12 @@ jobs:
           tag=${{ steps.meta.outputs.tag }}
           target=${{ steps.meta.outputs.target }}/${{ steps.meta.outputs.subtarget }}
           profile=${{ steps.meta.outputs.profile }}
-          image=${{ steps.meta.outputs.fs }} ${{ steps.meta.outputs.image }}
+          images=${{ steps.meta.outputs.fs }} ${{ steps.meta.outputs.images }}
           rootfs_partsize=${{ steps.meta.outputs.rootfs_partsize }}
           package_file=${{ steps.meta.outputs.package_file }}
+          sing_box_tag=${{ steps.meta.outputs.sing_box_tag }}
+          sing_box_asset_name=${{ steps.meta.outputs.sing_box_asset_name }}
+          sdk_file=${{ steps.meta.outputs.sdk_file }}
           build_base=${{ steps.meta.outputs.build_base }}
           EOF
 
@@ -184,6 +235,7 @@ jobs:
           cp -f "${{ steps.meta.outputs.package_file }}" diagnostics/packages.list
           cp -f config/build.conf diagnostics/build.conf
           [ -f imagebuilder/repositories ] && cp -f imagebuilder/repositories diagnostics/
+          find imagebuilder/packages -maxdepth 1 -type f | sort > diagnostics/local-packages.txt || true
 
       - if: always()
         uses: actions/upload-artifact@v4
@@ -192,39 +244,48 @@ jobs:
           path: diagnostics/
           if-no-files-found: warn
 
-      - name: Pick image
+      - name: Pick images
         id: pick
         shell: bash
         run: |
           set -euo pipefail
-          want="${{ steps.meta.outputs.image_file }}"
           dir="${{ steps.meta.outputs.target_dir }}"
-          src="${dir}/${want}"
+          mkdir -p out
+          found=0
 
-          if [ ! -f "$src" ]; then
-            src="$(find "$dir" -maxdepth 1 -type f -name "*${{ steps.meta.outputs.profile }}*${{ steps.meta.outputs.fs }}*${{ steps.meta.outputs.image }}" | sort | head -n 1)"
-          fi
+          while IFS= read -r image_name; do
+            [ -n "$image_name" ] || continue
+            want="openwrt-${{ steps.meta.outputs.ver }}-${{ steps.meta.outputs.target }}-${{ steps.meta.outputs.subtarget }}-${{ steps.meta.outputs.profile }}-${{ steps.meta.outputs.fs }}-${image_name}"
+            src="${dir}/${want}"
 
-          if [ -z "$src" ] || [ ! -f "$src" ]; then
-            echo "final image not found" >&2
-            find imagebuilder/bin/targets -maxdepth 3 -type f | sort >&2 || true
+            if [ ! -f "$src" ]; then
+              src="$(find "$dir" -maxdepth 1 -type f -name "*${{ steps.meta.outputs.profile }}*${{ steps.meta.outputs.fs }}*${image_name}" | sort | head -n 1)"
+            fi
+
+            if [ -z "$src" ] || [ ! -f "$src" ]; then
+              echo "image not found: $image_name" >&2
+              find imagebuilder/bin/targets -maxdepth 3 -type f | sort >&2 || true
+              exit 1
+            fi
+
+            cp -f "$src" "out/$want"
+            sha256sum "out/$want" > "out/$want.sha256"
+            found=1
+          done < <(printf '%s\n' "${{ steps.meta.outputs.images }}" | xargs -n1)
+
+          if [ "$found" -ne 1 ]; then
+            echo "no images were collected" >&2
             exit 1
           fi
 
-          mkdir -p out
-          cp -f "$src" "out/$want"
-          sha256sum "out/$want" > "out/$want.sha256"
-          echo "path=out/$want" >> "$GITHUB_OUTPUT"
-          echo "name=$want" >> "$GITHUB_OUTPUT"
-          echo "sha256=out/$want.sha256" >> "$GITHUB_OUTPUT"
+          find out -maxdepth 1 -type f | sort > out/manifest.txt
+          echo "dir=out" >> "$GITHUB_OUTPUT"
 
       - if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.pick.outputs.name }}
-          path: |
-            ${{ steps.pick.outputs.path }}
-            ${{ steps.pick.outputs.sha256 }}
+          name: openwrt-images-${{ steps.meta.outputs.ver }}
+          path: ${{ steps.pick.outputs.dir }}/
           if-no-files-found: error
 
       - name: Publish release
@@ -236,21 +297,22 @@ jobs:
           set -euo pipefail
           tag="${{ steps.meta.outputs.tag }}"
           ver="${{ steps.meta.outputs.ver }}"
-          title="OpenWrt ${ver} · x86_64 EFI Image"
+          title="OpenWrt ${ver} · x86_64 Images"
 
           cat > release-notes.txt <<EOF
           Official OpenWrt ${ver} x86_64 image built with ImageBuilder.
 
           - Target: ${{ steps.meta.outputs.target }}/${{ steps.meta.outputs.subtarget }}
           - Profile: ${{ steps.meta.outputs.profile }}
-          - Image: ${{ steps.meta.outputs.fs }} ${{ steps.meta.outputs.image }}
+          - Images: ${{ steps.meta.outputs.fs }} ${{ steps.meta.outputs.images }}
           - Rootfs size: ${{ steps.meta.outputs.rootfs_partsize }} MB
+          - sing-box: ${{ steps.meta.outputs.sing_box_tag }}
           - Package list: ${{ steps.meta.outputs.package_file }}
           EOF
 
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "${{ steps.pick.outputs.path }}" "${{ steps.pick.outputs.sha256 }}" --clobber
+            gh release upload "$tag" out/* --clobber
             gh release edit "$tag" --title "$title" --notes-file release-notes.txt
           else
-            gh release create "$tag" "${{ steps.pick.outputs.path }}" "${{ steps.pick.outputs.sha256 }}" --title "$title" --notes-file release-notes.txt
+            gh release create "$tag" out/* --title "$title" --notes-file release-notes.txt
           fi

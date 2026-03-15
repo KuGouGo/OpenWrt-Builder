@@ -1,6 +1,0 @@
-#!/bin/sh
-[ -f /sys/class/dmi/id/product_name ] && \
-grep -qi "Default string" /sys/class/dmi/id/product_name && \
-echo "OpenWrt Router" > /tmp/sysinfo/model
-
-exit 0

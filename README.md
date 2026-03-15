@@ -25,12 +25,13 @@ README.md
 ## Build flow
 
 1. Fetch latest official OpenWrt release
-2. Load build settings from `config/build.conf`
-3. Download matching official ImageBuilder
-4. Copy `files/` into ImageBuilder
-5. Parse `config/packages.list`
-6. Build image
-7. Upload diagnostics and release assets
+2. Fetch latest stable `sing-box` OpenWrt x86_64 APK when requested
+3. Load build settings from `config/build.conf`
+4. Download matching official ImageBuilder
+5. Copy `files/` into ImageBuilder
+6. Parse `config/packages.list`
+7. Build image
+8. Upload diagnostics and release assets
 
 ## Trigger
 
@@ -45,7 +46,7 @@ OPENWRT_TARGET=x86
 OPENWRT_SUBTARGET=64
 OPENWRT_PROFILE=generic
 OPENWRT_FS=squashfs
-OPENWRT_IMAGE=combined-efi.img.gz
+OPENWRT_IMAGES="combined.img.gz combined-efi.img.gz"
 ROOTFS_PARTSIZE=600
 BUILD_BASE=https://downloads.openwrt.org
 PACKAGES_FILE=config/packages.list
@@ -56,10 +57,12 @@ PACKAGES_FILE=config/packages.list
 - Targets new ImageBuilder layout (`repositories`)
 - Uses official OpenWrt release ImageBuilder, not full source compilation
 - Keeps diagnostics even on build failure
-- Prefers exact image filename, then safe fallback match
-- Rewrites package feeds to the USTC mirror on first boot via `files/etc/uci-defaults/99-package-mirror`
-- `files/etc/sysctl.conf` contains device-specific tuning for the maintainer's x86_64 host
-- `sing-box` is preinstalled but disabled by default
+- Builds both `combined.img.gz` (Legacy BIOS) and `combined-efi.img.gz` (UEFI) by default
+- Keeps backward compatibility with older `OPENWRT_IMAGE=...` single-image configs
+- Preloads deterministic system config from `files/etc/config/`
+- Rewrites APK repositories to the USTC mirror on first boot via `files/etc/uci-defaults/99-package-mirror`
+- Enables a boot-time model normalization service to replace placeholder x86 DMI model names with more useful values
+- If `sing-box` is present in `config/packages.list`, the workflow downloads the latest stable upstream `openwrt_x86_64.apk` release asset and injects it via ImageBuilder's local APK repository
 
 ## Download
 
