@@ -9,12 +9,11 @@ SINGBOX_BIN="/usr/bin/sing-box"
 INITD="/etc/init.d/sing-box"
 CONFIG_DIR="/etc/sing-box"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
-SETTINGS_FILE="${CONFIG_DIR}/update.conf"
+CONFIG_URL="https://sub.kugougou.store/H5Y1nwrDzowj7FcqfFNxn7R39AdmDDtq/api/file/sing-box"
 
 LOG_FILE="/tmp/singbox-update.log"
 LOCK_DIR="/tmp/.singbox-update.lock"
 TEMP_CONFIG="/tmp/singbox_config.json.tmp"
-CHECK_ERR="/tmp/singbox_check.err"
 LOCK_ACQUIRED=0
 
 C_RESET='\033[0m'
@@ -33,24 +32,9 @@ error() { log "${C_RED}[错误]${C_RESET} $*"; exit 1; }
 
 cleanup() {
     [ "$LOCK_ACQUIRED" -eq 1 ] && rm -rf "$LOCK_DIR" 2>/dev/null || true
-    rm -f "$TEMP_CONFIG" "$CHECK_ERR" 2>/dev/null || true
+    rm -f "$TEMP_CONFIG" 2>/dev/null || true
 }
 trap cleanup INT TERM EXIT
-
-CONFIG_URL="${SINGBOX_CONFIG_URL:-}"
-CONFIG_SHA256="${SINGBOX_CONFIG_SHA256:-}"
-
-load_settings() {
-    if [ -f "$SETTINGS_FILE" ]; then
-        # shellcheck disable=SC1090
-        . "$SETTINGS_FILE"
-    fi
-
-    CONFIG_URL="${CONFIG_URL:-${SINGBOX_CONFIG_URL:-}}"
-    CONFIG_SHA256="${CONFIG_SHA256:-${SINGBOX_CONFIG_SHA256:-}}"
-
-    [ -n "$CONFIG_URL" ] || error "未提供配置下载地址，请通过环境变量或 ${SETTINGS_FILE} 下发"
-}
 
 acquire_lock() {
     if mkdir "$LOCK_DIR" 2>/dev/null; then
@@ -75,7 +59,6 @@ acquire_lock() {
 
 check_deps() {
     command -v md5sum >/dev/null 2>&1 || error "缺少依赖命令: md5sum"
-    command -v sha256sum >/dev/null 2>&1 || error "缺少依赖命令: sha256sum"
     command -v awk >/dev/null 2>&1 || error "缺少依赖命令: awk"
 
     if command -v curl >/dev/null 2>&1; then
@@ -102,25 +85,14 @@ download_config() {
     fi
 }
 
-verify_checksum() {
-    [ -n "$CONFIG_SHA256" ] || return 0
-
-    actual_sha256="$(sha256sum "$TEMP_CONFIG" | awk '{print $1}')"
-    if [ "$actual_sha256" != "$CONFIG_SHA256" ]; then
-        rm -f "$TEMP_CONFIG"
-        error "配置文件 SHA256 校验失败"
-    fi
-}
-
 validate_config() {
     info "正在验证配置文件..."
-    if "$SINGBOX_BIN" check -c "$TEMP_CONFIG" > /dev/null 2>"$CHECK_ERR"; then
-        rm -f "$CHECK_ERR"
+    if "$SINGBOX_BIN" check -c "$TEMP_CONFIG" >/dev/null 2>&1; then
         return 0
     fi
 
     warn "配置文件校验失败，请检查下发内容或在设备上手动运行 'sing-box check -c $TEMP_CONFIG'"
-    rm -f "$TEMP_CONFIG" "$CHECK_ERR"
+    rm -f "$TEMP_CONFIG"
     return 1
 }
 
@@ -130,7 +102,6 @@ update_config() {
         return 1
     }
 
-    verify_checksum
     validate_config || return 1
 
     local_md5=""
@@ -174,7 +145,6 @@ main() {
     > "$LOG_FILE"
 
     acquire_lock
-    load_settings
     check_deps
     check_singbox
 
