@@ -25,13 +25,14 @@ README.md
 ## Build flow
 
 1. Fetch latest official OpenWrt release
-2. Fetch latest stable `sing-box` OpenWrt x86_64 APK when requested
+2. Fetch latest stable `sing-box` source when requested
 3. Load build settings from `config/build.conf`
-4. Download matching official ImageBuilder
-5. Copy `files/` into ImageBuilder
-6. Parse `config/packages.list`
-7. Build image
-8. Upload diagnostics and release assets
+4. Download matching official ImageBuilder and SDK
+5. Build a local `sing-box` APK with the matching SDK
+6. Copy `files/` into ImageBuilder
+7. Parse `config/packages.list`
+8. Build image
+9. Upload diagnostics and release assets
 
 ## Trigger
 
@@ -62,7 +63,7 @@ PACKAGES_FILE=config/packages.list
 - Preloads deterministic system config from `files/etc/config/`
 - Rewrites APK repositories to the USTC mirror on first boot via `files/etc/uci-defaults/99-package-mirror`
 - Enables a boot-time model normalization service to replace placeholder x86 DMI model names with more useful values
-- If `sing-box` is present in `config/packages.list`, the workflow downloads the latest stable upstream `openwrt_x86_64.apk` release asset and injects it via ImageBuilder's local APK repository
+- If `sing-box` is present in `config/packages.list`, the workflow builds a matching local APK with the latest stable OpenWrt SDK and injects it via ImageBuilder's local APK repository
 
 ## Download
 

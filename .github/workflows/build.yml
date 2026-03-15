@@ -74,10 +74,17 @@ jobs:
           sing_box_json="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest)"
           sing_box_tag="$(printf '%s' "$sing_box_json" | jq -r '.tag_name')"
           sing_box_ver="${sing_box_tag#v}"
-          sing_box_asset_name="$(printf '%s' "$sing_box_json" | jq -r '.assets[] | select(.name | test("^sing-box_.+_openwrt_x86_64\\.apk$")) | .name' | head -n 1)"
-          sing_box_asset_url="$(printf '%s' "$sing_box_json" | jq -r '.assets[] | select(.name | test("^sing-box_.+_openwrt_x86_64\\.apk$")) | .browser_download_url' | head -n 1)"
-          if [ -z "$sing_box_asset_name" ] || [ -z "$sing_box_asset_url" ]; then
-            echo "failed to find latest stable sing-box OpenWrt x86_64 APK asset" >&2
+          sing_box_source_url="https://codeload.github.com/SagerNet/sing-box/tar.gz/${sing_box_tag}"
+          sing_box_hash="$(curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 180 -fL "$sing_box_source_url" | sha256sum | awk '{print $1}')"
+          if [ -z "$sing_box_hash" ]; then
+            echo "failed to compute latest stable sing-box source hash" >&2
+            exit 1
+          fi
+
+          sha256sums_url="${BUILD_BASE}/releases/${ver}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/sha256sums"
+          sdk_file="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL "$sha256sums_url" | awk '/openwrt-sdk-.*\.Linux-x86_64\.tar\.zst$/ { sub(/^\*/, "", $2); print $2; exit }')"
+          if [ -z "$sdk_file" ]; then
+            echo "failed to resolve matching sdk filename" >&2
             exit 1
           fi
 
@@ -95,10 +102,9 @@ jobs:
           echo "package_file=$PACKAGES_FILE" >> "$GITHUB_OUTPUT"
           echo "sing_box_tag=$sing_box_tag" >> "$GITHUB_OUTPUT"
           echo "sing_box_ver=$sing_box_ver" >> "$GITHUB_OUTPUT"
-          echo "sing_box_asset_name=$sing_box_asset_name" >> "$GITHUB_OUTPUT"
-          echo "sing_box_asset_url=$sing_box_asset_url" >> "$GITHUB_OUTPUT"
+          echo "sing_box_hash=$sing_box_hash" >> "$GITHUB_OUTPUT"
           echo "imagebuilder_file=openwrt-imagebuilder-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}.Linux-x86_64.tar.zst" >> "$GITHUB_OUTPUT"
-          echo "sdk_file=openwrt-sdk-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}_gcc-14.3.0_musl.Linux-x86_64.tar.zst" >> "$GITHUB_OUTPUT"
+          echo "sdk_file=$sdk_file" >> "$GITHUB_OUTPUT"
           echo "target_dir=imagebuilder/bin/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}" >> "$GITHUB_OUTPUT"
 
       - name: Build summary
@@ -145,7 +151,17 @@ jobs:
             rsync -a files/ imagebuilder/files/
           fi
 
-      - name: Download custom APK packages
+      - name: Download sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="${{ steps.meta.outputs.build_base }}/releases/${{ steps.meta.outputs.ver }}/targets/${{ steps.meta.outputs.target }}/${{ steps.meta.outputs.subtarget }}/${{ steps.meta.outputs.sdk_file }}"
+          echo "Downloading sdk: $url"
+          curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 300 -fL "$url" -o sdk.tar.zst
+          tar --zstd -xf sdk.tar.zst
+          mv openwrt-sdk-* sdk
+
+      - name: Build custom sing-box package
         shell: bash
         run: |
           set -euo pipefail
@@ -160,16 +176,38 @@ jobs:
             $0 == "sing-box" { found=1 }
             END { exit found ? 0 : 1 }
           ' "$pkg_file"; then
-            echo "sing-box not requested; skipping custom APK download"
+            echo "sing-box not requested; skipping sdk package build"
             exit 0
           fi
 
-          dst="imagebuilder/packages/${{ steps.meta.outputs.sing_box_asset_name }}"
-          echo "Downloading latest stable sing-box APK: ${{ steps.meta.outputs.sing_box_asset_name }}"
-          curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 180 -fL \
-            "${{ steps.meta.outputs.sing_box_asset_url }}" \
-            -o "$dst"
-          sha256sum "$dst" | tee "${GITHUB_WORKSPACE}/diagnostics/sing-box.sha256"
+          rm -rf sdk/package/local/sing-box sdk/package/feeds/packages/sing-box
+          mkdir -p sdk/package/local/sing-box/files
+          sed \
+            -e "s/@SING_BOX_VERSION@/${{ steps.meta.outputs.sing_box_ver }}/g" \
+            -e "s/@SING_BOX_HASH@/${{ steps.meta.outputs.sing_box_hash }}/g" \
+            "${GITHUB_WORKSPACE}/packages/net/sing-box/Makefile.in" > sdk/package/local/sing-box/Makefile
+          cp -f "${GITHUB_WORKSPACE}/packages/net/sing-box/files/sing-box.conf" sdk/package/local/sing-box/files/sing-box.conf
+          cp -f "${GITHUB_WORKSPACE}/packages/net/sing-box/files/sing-box.init" sdk/package/local/sing-box/files/sing-box.init
+
+          cat >> sdk/.config <<'EOF'
+          CONFIG_PACKAGE_sing-box=y
+          EOF
+
+          cd sdk
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          make defconfig
+          make package/sing-box/compile -j"$(nproc)" V=s 2>&1 | tee "${GITHUB_WORKSPACE}/diagnostics/sing-box-sdk-build.log"
+
+          built_apk="$(find bin/packages -type f -name 'sing-box_*.apk' | sort | head -n 1)"
+          if [ -z "$built_apk" ] || [ ! -f "$built_apk" ]; then
+            echo "custom sing-box apk not found after sdk build" >&2
+            find bin/packages -type f | sort >&2 || true
+            exit 1
+          fi
+
+          cp -f "$built_apk" "${GITHUB_WORKSPACE}/imagebuilder/packages/"
+          sha256sum "${GITHUB_WORKSPACE}/imagebuilder/packages/$(basename "$built_apk")" | tee "${GITHUB_WORKSPACE}/diagnostics/sing-box.sha256"
 
       - name: Build image
         shell: bash
@@ -226,7 +264,7 @@ jobs:
           rootfs_partsize=${{ steps.meta.outputs.rootfs_partsize }}
           package_file=${{ steps.meta.outputs.package_file }}
           sing_box_tag=${{ steps.meta.outputs.sing_box_tag }}
-          sing_box_asset_name=${{ steps.meta.outputs.sing_box_asset_name }}
+          sing_box_hash=${{ steps.meta.outputs.sing_box_hash }}
           sdk_file=${{ steps.meta.outputs.sdk_file }}
           build_base=${{ steps.meta.outputs.build_base }}
           EOF
@@ -235,6 +273,7 @@ jobs:
           cp -f "${{ steps.meta.outputs.package_file }}" diagnostics/packages.list
           cp -f config/build.conf diagnostics/build.conf
           [ -f imagebuilder/repositories ] && cp -f imagebuilder/repositories diagnostics/
+          find sdk/bin/packages -type f | sort > diagnostics/sdk-packages.txt || true
           find imagebuilder/packages -maxdepth 1 -type f | sort > diagnostics/local-packages.txt || true
 
       - if: always()
