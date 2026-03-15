@@ -184,6 +184,8 @@ jobs:
           PACKAGES: sing-box
           INDEX: 1
           BUILD_LOG: 1
+          NO_REFRESH_CHECK: 1
+          NO_SHFMT_CHECK: 1
           V: s
 
       - name: Import custom sing-box package
