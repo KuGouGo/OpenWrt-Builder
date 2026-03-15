@@ -1,4 +1,3 @@
-
 config sing-box 'main'
 	option enabled '0'
 	option user 'root'

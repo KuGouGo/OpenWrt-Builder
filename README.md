@@ -57,6 +57,8 @@ PACKAGES_FILE=config/packages.list
 - Uses official OpenWrt release ImageBuilder, not full source compilation
 - Keeps diagnostics even on build failure
 - Prefers exact image filename, then safe fallback match
+- `files/etc/sysctl.conf` contains device-specific tuning for the maintainer's x86_64 host
+- `sing-box` is preinstalled but disabled by default; edit `/etc/sing-box/config.json` before enabling it
 
 ## Download
 
