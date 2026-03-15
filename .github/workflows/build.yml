@@ -81,8 +81,22 @@ jobs:
             exit 1
           fi
 
-          sha256sums_url="${BUILD_BASE}/releases/${ver}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/sha256sums"
-          sdk_file="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL "$sha256sums_url" | awk '/openwrt-sdk-.*\.Linux-x86_64\.tar\.zst$/ { sub(/^\*/, "", $2); print $2; exit }')"
+          target_base_url="${BUILD_BASE}/releases/${ver}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}"
+          sdk_file=""
+
+          sdk_file="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL "${target_base_url}/" \
+            | grep -Eo "openwrt-sdk-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}[^\"']*Linux-x86_64\\.tar\\.zst" \
+            | head -n 1 || true)"
+
+          if [ -z "$sdk_file" ]; then
+            sdk_file="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL "${target_base_url}/sha256sums" \
+              | awk '/openwrt-sdk-.*\.Linux-x86_64\.tar\.zst$/ { sub(/^\*/, "", $2); print $2; exit }' || true)"
+          fi
+
+          if [ -z "$sdk_file" ]; then
+            sdk_file="openwrt-sdk-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
+          fi
+
           if [ -z "$sdk_file" ]; then
             echo "failed to resolve matching sdk filename" >&2
             exit 1
