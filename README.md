@@ -59,7 +59,7 @@ PACKAGES_FILE=config/packages.list
 - Prefers exact image filename, then safe fallback match
 - `files/etc/sysctl.conf` contains device-specific tuning for the maintainer's x86_64 host
 - `sing-box` is preinstalled but disabled by default
-- `files/usr/bin/singbox-update` fetches `/etc/sing-box/config.json` from the maintainer's built-in URL
+- `files/usr/bin/singbox-update` includes a `CONFIG_URL` placeholder that should be replaced before use
 
 ## Download
 

@@ -9,7 +9,7 @@ SINGBOX_BIN="/usr/bin/sing-box"
 INITD="/etc/init.d/sing-box"
 CONFIG_DIR="/etc/sing-box"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
-CONFIG_URL="https://sub.kugougou.store/H5Y1nwrDzowj7FcqfFNxn7R39AdmDDtq/api/file/sing-box"
+CONFIG_URL="PLEASE_SET_SINGBOX_CONFIG_URL"
 
 LOG_FILE="/tmp/singbox-update.log"
 LOCK_DIR="/tmp/.singbox-update.lock"
@@ -73,6 +73,7 @@ check_deps() {
 check_singbox() {
     [ -x "$SINGBOX_BIN" ] || error "sing-box 未安装或不可执行: $SINGBOX_BIN"
     [ -x "$INITD" ] || error "未找到 sing-box 服务脚本: $INITD"
+    [ "$CONFIG_URL" != "PLEASE_SET_SINGBOX_CONFIG_URL" ] || error "请先编辑脚本中的 CONFIG_URL"
 }
 
 download_config() {
