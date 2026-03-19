@@ -75,11 +75,13 @@ jobs:
           fi
 
           sing_box_tag=""
+          sing_box_pkgver=""
           sing_box_asset_name=""
           sing_box_asset_url=""
           if [ "$sing_box_enabled" = "true" ]; then
             sing_box_json="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest)"
             sing_box_tag="$(printf '%s' "$sing_box_json" | jq -r '.tag_name')"
+            sing_box_pkgver="${sing_box_tag#v}-r0"
             sing_box_asset_name="$(printf '%s' "$sing_box_json" | jq -r '.assets[] | select(.name | test("^sing-box_.*_openwrt_x86_64\\.apk$")) | .name' | head -n 1)"
             sing_box_asset_url="$(printf '%s' "$sing_box_json" | jq -r '.assets[] | select(.name | test("^sing-box_.*_openwrt_x86_64\\.apk$")) | .browser_download_url' | head -n 1)"
             if [ -z "$sing_box_asset_name" ] || [ "$sing_box_asset_name" = "null" ] || [ -z "$sing_box_asset_url" ] || [ "$sing_box_asset_url" = "null" ]; then
@@ -102,6 +104,7 @@ jobs:
           echo "package_file=$PACKAGES_FILE" >> "$GITHUB_OUTPUT"
           echo "sing_box_enabled=$sing_box_enabled" >> "$GITHUB_OUTPUT"
           echo "sing_box_tag=$sing_box_tag" >> "$GITHUB_OUTPUT"
+          echo "sing_box_pkgver=$sing_box_pkgver" >> "$GITHUB_OUTPUT"
           echo "sing_box_asset_name=$sing_box_asset_name" >> "$GITHUB_OUTPUT"
           echo "sing_box_asset_url=$sing_box_asset_url" >> "$GITHUB_OUTPUT"
           echo "imagebuilder_file=openwrt-imagebuilder-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}.Linux-x86_64.tar.zst" >> "$GITHUB_OUTPUT"
@@ -166,9 +169,10 @@ jobs:
 
           if [ "${{ steps.meta.outputs.sing_box_enabled }}" = "true" ]; then
             rm -f "$packages_dir"/sing-box_*_openwrt_x86_64.apk "$packages_dir"/sing-box_*_openwrt_x86_64.ipk
+            rm -f "$packages_dir"/sing-box-*.apk
             curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 300 -fL \
               "${{ steps.meta.outputs.sing_box_asset_url }}" \
-              -o "$packages_dir/${{ steps.meta.outputs.sing_box_asset_name }}"
+              -o "$packages_dir/sing-box-${{ steps.meta.outputs.sing_box_pkgver }}.apk"
           fi
 
           find "$packages_dir" -maxdepth 1 -type f \( -name '*.apk' -o -name '*.ipk' \) -print0 | while IFS= read -r -d '' pkg; do
@@ -179,8 +183,8 @@ jobs:
           echo "count=${local_pkg_count}" >> "$GITHUB_OUTPUT"
 
           find "${GITHUB_WORKSPACE}/imagebuilder/packages" -maxdepth 1 -type f | sort > "${GITHUB_WORKSPACE}/diagnostics/local-packages.txt"
-          if [ -n "${{ steps.meta.outputs.sing_box_asset_name }}" ] && [ -f "${GITHUB_WORKSPACE}/imagebuilder/packages/${{ steps.meta.outputs.sing_box_asset_name }}" ]; then
-            sha256sum "${GITHUB_WORKSPACE}/imagebuilder/packages/${{ steps.meta.outputs.sing_box_asset_name }}" | tee "${GITHUB_WORKSPACE}/diagnostics/sing-box.sha256"
+          if [ -n "${{ steps.meta.outputs.sing_box_pkgver }}" ] && [ -f "${GITHUB_WORKSPACE}/imagebuilder/packages/sing-box-${{ steps.meta.outputs.sing_box_pkgver }}.apk" ]; then
+            sha256sum "${GITHUB_WORKSPACE}/imagebuilder/packages/sing-box-${{ steps.meta.outputs.sing_box_pkgver }}.apk" | tee "${GITHUB_WORKSPACE}/diagnostics/sing-box.sha256"
           fi
 
       - name: Build image
@@ -242,6 +246,7 @@ jobs:
           rootfs_partsize=${{ steps.meta.outputs.rootfs_partsize }}
           package_file=${{ steps.meta.outputs.package_file }}
           sing_box_tag=${{ steps.meta.outputs.sing_box_tag }}
+          sing_box_pkgver=${{ steps.meta.outputs.sing_box_pkgver }}
           sing_box_asset_name=${{ steps.meta.outputs.sing_box_asset_name }}
           sing_box_asset_url=${{ steps.meta.outputs.sing_box_asset_url }}
           build_base=${{ steps.meta.outputs.build_base }}
@@ -313,7 +318,7 @@ jobs:
           set -euo pipefail
           tag="${{ steps.meta.outputs.tag }}"
           ver="${{ steps.meta.outputs.ver }}"
-          title="OpenWrt ${ver} 路 x86_64 Images"
+          title="OpenWrt ${ver} x86_64 Images"
           sing_box_tag="${{ steps.meta.outputs.sing_box_tag }}"
           if [ -z "$sing_box_tag" ]; then
             sing_box_tag="disabled"
