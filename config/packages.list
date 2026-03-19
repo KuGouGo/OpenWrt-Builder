@@ -1,5 +1,6 @@
 apk-openssl
 bash
+ca-bundle
 curl
 dnsmasq-full
 ethtool
@@ -8,15 +9,11 @@ ip-full
 irqbalance
 jq
 kmod-drm-i915
-kmod-dwmac-intel
-kmod-e1000e
-kmod-forcedeth
 kmod-fs-vfat
-kmod-igb
 kmod-igc
-kmod-ixgbe
 kmod-tcp-bbr
 kmod-tun
+libustream-openssl
 lsblk
 luci
 luci-app-firewall
@@ -24,7 +21,6 @@ luci-app-package-manager
 luci-i18n-base-zh-cn
 luci-i18n-firewall-zh-cn
 luci-i18n-package-manager-zh-cn
-luci-mod-rpc
 nano
 openssh-sftp-server
 owut
@@ -35,4 +31,15 @@ wget-ssl
 zoneinfo-asia
 -apk-mbedtls
 -dnsmasq
+-kmod-amazon-ena
+-kmod-amd-xgbe
+-kmod-bnx2
+-kmod-dwmac-intel
+-kmod-e1000
+-kmod-r8169
+-kmod-e1000e
+-kmod-forcedeth
+-kmod-igb
+-kmod-ixgbe
+-kmod-tg3
 -libustream-mbedtls
