@@ -1,8 +1,0 @@
-#!/bin/sh
-
-if [ -x /etc/init.d/custom-model ]; then
-    /etc/init.d/custom-model enable
-    /etc/init.d/custom-model start
-fi
-
-exit 0

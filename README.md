@@ -5,7 +5,7 @@
 [![Upstream](https://img.shields.io/badge/upstream-OpenWrt-00b5e2)](https://github.com/openwrt/openwrt)
 [![Target](https://img.shields.io/badge/target-x86%2F64-generic)](https://openwrt.org/)
 
-Build official OpenWrt x86_64 release images with a small, release-based workflow.
+Build official OpenWrt x86_64 release images with ImageBuilder.
 
 ## Layout
 
@@ -14,38 +14,39 @@ Build official OpenWrt x86_64 release images with a small, release-based workflo
 config/build.conf
 config/packages.list
 files/
+packages/
 README.md
 ```
 
-- `config/build.conf`: static build target config
-- `config/packages.list`: package list
-- `files/`: files copied into the final image
-- `.github/workflows/build.yml`: build and release pipeline
+- `config/build.conf`: build target config
+- `config/packages.list`: extra packages and replacement rules
+- `files/`: first-boot customizations
+- `packages/`: local `.apk` files copied into ImageBuilder
+- `.github/workflows/build.yml`: build workflow
 
-## Build flow
+## How It Works
 
-1. Fetch latest official OpenWrt release
-2. Load build settings from `config/build.conf`
-3. Download the matching official ImageBuilder
-4. Copy `files/` into ImageBuilder
-5. Parse `config/packages.list`
-6. Build image with packages from the official OpenWrt repositories
-7. Upload diagnostics and release assets
+1. Resolve the latest official OpenWrt release.
+2. Download the matching ImageBuilder.
+3. Download the latest upstream `sing-box` APK when `sing-box` is present in `config/packages.list`.
+4. Copy `files/` and local packages into ImageBuilder.
+5. Build `combined-efi.img.gz`.
+6. Upload diagnostics and release assets.
 
 ## Trigger
 
 Run `Actions -> build -> Run workflow`.
 
-This workflow has no manual inputs. Build behavior comes from `config/build.conf` and `config/packages.list`.
+This workflow has no manual inputs. Build behavior comes from `config/build.conf`, `config/packages.list`, `files/`, and `packages/`.
 
-## Build config
+## Build Config
 
 ```conf
 OPENWRT_TARGET=x86
 OPENWRT_SUBTARGET=64
 OPENWRT_PROFILE=generic
 OPENWRT_FS=squashfs
-OPENWRT_IMAGES="combined.img.gz combined-efi.img.gz"
+OPENWRT_IMAGES="combined-efi.img.gz"
 ROOTFS_PARTSIZE=600
 BUILD_BASE=https://downloads.openwrt.org
 PACKAGES_FILE=config/packages.list
@@ -53,15 +54,14 @@ PACKAGES_FILE=config/packages.list
 
 ## Notes
 
-- Targets new ImageBuilder layout (`repositories`)
 - Uses official OpenWrt release ImageBuilder, not full source compilation
+- Builds only `combined-efi.img.gz` (UEFI)
 - Keeps diagnostics even on build failure
-- Builds both `combined.img.gz` (Legacy BIOS) and `combined-efi.img.gz` (UEFI) by default
-- Keeps backward compatibility with older `OPENWRT_IMAGE=...` single-image configs
-- Preloads deterministic system config from `files/etc/config/`
-- Rewrites APK repositories to the USTC mirror on first boot via `files/etc/uci-defaults/99-package-mirror`
-- Enables a boot-time model normalization service to replace placeholder x86 DMI model names with more useful values
-- Packages listed in `config/packages.list` are pulled directly from the matching official OpenWrt repositories during the ImageBuilder run
+- Uses `ADD_LOCAL_KEY=1` when local packages are present
+- `files/etc/uci-defaults/97-system-cn`: timezone `Asia/Shanghai` and domestic NTP servers
+- `files/etc/uci-defaults/98-apk-mirror`: switch APK repositories to the USTC mirror
+- `files/etc/uci-defaults/99-lan-ip`: set LAN address to `10.0.0.1/24`
+- Local `.apk` files can be placed directly in `packages/`
 
 ## Download
 

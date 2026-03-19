@@ -29,10 +29,7 @@ jobs:
           set -euo pipefail
 
           config_file="${GITHUB_WORKSPACE}/config/build.conf"
-          if [ ! -f "$config_file" ]; then
-            echo "missing config/build.conf" >&2
-            exit 1
-          fi
+          [ -f "$config_file" ] || { echo "missing config/build.conf" >&2; exit 1; }
 
           set -a
           # shellcheck disable=SC1091
@@ -43,24 +40,30 @@ jobs:
           : "${OPENWRT_SUBTARGET:?missing OPENWRT_SUBTARGET}"
           : "${OPENWRT_PROFILE:?missing OPENWRT_PROFILE}"
           : "${OPENWRT_FS:?missing OPENWRT_FS}"
+          : "${OPENWRT_IMAGES:?missing OPENWRT_IMAGES}"
           : "${ROOTFS_PARTSIZE:?missing ROOTFS_PARTSIZE}"
           : "${BUILD_BASE:?missing BUILD_BASE}"
           : "${PACKAGES_FILE:?missing PACKAGES_FILE}"
-
-          image_names="${OPENWRT_IMAGES:-${OPENWRT_IMAGE:-}}"
-          if [ -z "$image_names" ]; then
-            echo "missing OPENWRT_IMAGES or OPENWRT_IMAGE" >&2
-            exit 1
-          fi
 
           if ! [[ "$ROOTFS_PARTSIZE" =~ ^[0-9]+$ ]]; then
             echo "ROOTFS_PARTSIZE must be an integer: $ROOTFS_PARTSIZE" >&2
             exit 1
           fi
 
-          if [ ! -f "${GITHUB_WORKSPACE}/${PACKAGES_FILE}" ]; then
-            echo "package file not found: ${PACKAGES_FILE}" >&2
-            exit 1
+          package_file="${GITHUB_WORKSPACE}/${PACKAGES_FILE}"
+          [ -f "$package_file" ] || { echo "package file not found: ${PACKAGES_FILE}" >&2; exit 1; }
+
+          sing_box_enabled="false"
+          if awk '
+            {
+              sub(/\r$/, "")
+              sub(/[[:space:]]*#.*/, "")
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+            }
+            $0 == "sing-box" { found=1 }
+            END { exit found ? 0 : 1 }
+          ' "$package_file"; then
+            sing_box_enabled="true"
           fi
 
           json="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL https://api.github.com/repos/openwrt/openwrt/releases/latest)"
@@ -71,6 +74,20 @@ jobs:
             exit 1
           fi
 
+          sing_box_tag=""
+          sing_box_asset_name=""
+          sing_box_asset_url=""
+          if [ "$sing_box_enabled" = "true" ]; then
+            sing_box_json="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest)"
+            sing_box_tag="$(printf '%s' "$sing_box_json" | jq -r '.tag_name')"
+            sing_box_asset_name="$(printf '%s' "$sing_box_json" | jq -r '.assets[] | select(.name | test("^sing-box_.*_openwrt_x86_64\\.apk$")) | .name' | head -n 1)"
+            sing_box_asset_url="$(printf '%s' "$sing_box_json" | jq -r '.assets[] | select(.name | test("^sing-box_.*_openwrt_x86_64\\.apk$")) | .browser_download_url' | head -n 1)"
+            if [ -z "$sing_box_asset_name" ] || [ "$sing_box_asset_name" = "null" ] || [ -z "$sing_box_asset_url" ] || [ "$sing_box_asset_url" = "null" ]; then
+              echo "failed to find latest stable sing-box openwrt_x86_64 apk asset" >&2
+              exit 1
+            fi
+          fi
+
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
           echo "target=$OPENWRT_TARGET" >> "$GITHUB_OUTPUT"
@@ -78,11 +95,15 @@ jobs:
           echo "profile=$OPENWRT_PROFILE" >> "$GITHUB_OUTPUT"
           echo "fs=$OPENWRT_FS" >> "$GITHUB_OUTPUT"
           echo "images<<EOF" >> "$GITHUB_OUTPUT"
-          printf '%s\n' "$image_names" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$OPENWRT_IMAGES" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
           echo "build_base=$BUILD_BASE" >> "$GITHUB_OUTPUT"
           echo "rootfs_partsize=$ROOTFS_PARTSIZE" >> "$GITHUB_OUTPUT"
           echo "package_file=$PACKAGES_FILE" >> "$GITHUB_OUTPUT"
+          echo "sing_box_enabled=$sing_box_enabled" >> "$GITHUB_OUTPUT"
+          echo "sing_box_tag=$sing_box_tag" >> "$GITHUB_OUTPUT"
+          echo "sing_box_asset_name=$sing_box_asset_name" >> "$GITHUB_OUTPUT"
+          echo "sing_box_asset_url=$sing_box_asset_url" >> "$GITHUB_OUTPUT"
           echo "imagebuilder_file=openwrt-imagebuilder-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}.Linux-x86_64.tar.zst" >> "$GITHUB_OUTPUT"
           echo "target_dir=imagebuilder/bin/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}" >> "$GITHUB_OUTPUT"
 
@@ -90,6 +111,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sing_box_tag="${{ steps.meta.outputs.sing_box_tag }}"
+          if [ -z "$sing_box_tag" ]; then
+            sing_box_tag="disabled"
+          fi
+
           pkg_count="$(awk '
             {
               sub(/\r$/, "")
@@ -105,6 +131,7 @@ jobs:
           echo "Profile                : ${{ steps.meta.outputs.profile }}"
           echo "Images                 : ${{ steps.meta.outputs.fs }} ${{ steps.meta.outputs.images }}"
           echo "Rootfs size            : ${{ steps.meta.outputs.rootfs_partsize }} MB"
+          echo "Latest sing-box        : $sing_box_tag"
           echo "Packages file          : ${{ steps.meta.outputs.package_file }}"
           echo "Unique package entries : $pkg_count"
           echo "Build source           : ${{ steps.meta.outputs.build_base }}"
@@ -124,9 +151,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p imagebuilder/files diagnostics
+          mkdir -p imagebuilder/files imagebuilder/packages diagnostics
           if [ -d files ]; then
             rsync -a files/ imagebuilder/files/
+          fi
+
+      - name: Prepare local packages
+        id: local-packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages_dir="${GITHUB_WORKSPACE}/packages"
+          mkdir -p "$packages_dir"
+
+          if [ "${{ steps.meta.outputs.sing_box_enabled }}" = "true" ]; then
+            rm -f "$packages_dir"/sing-box_*_openwrt_x86_64.apk "$packages_dir"/sing-box_*_openwrt_x86_64.ipk
+            curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 300 -fL \
+              "${{ steps.meta.outputs.sing_box_asset_url }}" \
+              -o "$packages_dir/${{ steps.meta.outputs.sing_box_asset_name }}"
+          fi
+
+          find "$packages_dir" -maxdepth 1 -type f \( -name '*.apk' -o -name '*.ipk' \) -print0 | while IFS= read -r -d '' pkg; do
+            cp -f "$pkg" "${GITHUB_WORKSPACE}/imagebuilder/packages/"
+          done
+
+          local_pkg_count="$(find "${GITHUB_WORKSPACE}/imagebuilder/packages" -maxdepth 1 -type f \( -name '*.apk' -o -name '*.ipk' \) | wc -l | awk '{print $1}')"
+          echo "count=${local_pkg_count}" >> "$GITHUB_OUTPUT"
+
+          find "${GITHUB_WORKSPACE}/imagebuilder/packages" -maxdepth 1 -type f | sort > "${GITHUB_WORKSPACE}/diagnostics/local-packages.txt"
+          if [ -n "${{ steps.meta.outputs.sing_box_asset_name }}" ] && [ -f "${GITHUB_WORKSPACE}/imagebuilder/packages/${{ steps.meta.outputs.sing_box_asset_name }}" ]; then
+            sha256sum "${GITHUB_WORKSPACE}/imagebuilder/packages/${{ steps.meta.outputs.sing_box_asset_name }}" | tee "${GITHUB_WORKSPACE}/diagnostics/sing-box.sha256"
           fi
 
       - name: Build image
@@ -162,6 +216,10 @@ jobs:
             ROOTFS_PARTSIZE="${{ steps.meta.outputs.rootfs_partsize }}"
           )
 
+          if [ "${{ steps.local-packages.outputs.count }}" != "0" ]; then
+            make_args+=(ADD_LOCAL_KEY=1)
+          fi
+
           if [ -n "$pkgs" ]; then
             make_args+=(PACKAGES="$pkgs")
           fi
@@ -183,6 +241,9 @@ jobs:
           images=${{ steps.meta.outputs.fs }} ${{ steps.meta.outputs.images }}
           rootfs_partsize=${{ steps.meta.outputs.rootfs_partsize }}
           package_file=${{ steps.meta.outputs.package_file }}
+          sing_box_tag=${{ steps.meta.outputs.sing_box_tag }}
+          sing_box_asset_name=${{ steps.meta.outputs.sing_box_asset_name }}
+          sing_box_asset_url=${{ steps.meta.outputs.sing_box_asset_url }}
           build_base=${{ steps.meta.outputs.build_base }}
           EOF
 
@@ -190,6 +251,7 @@ jobs:
           cp -f "${{ steps.meta.outputs.package_file }}" diagnostics/packages.list
           cp -f config/build.conf diagnostics/build.conf
           [ -f imagebuilder/repositories ] && cp -f imagebuilder/repositories diagnostics/
+          find imagebuilder/packages -maxdepth 1 -type f | sort > diagnostics/local-packages.txt || true
 
       - if: always()
         uses: actions/upload-artifact@v4
@@ -251,7 +313,11 @@ jobs:
           set -euo pipefail
           tag="${{ steps.meta.outputs.tag }}"
           ver="${{ steps.meta.outputs.ver }}"
-          title="OpenWrt ${ver} · x86_64 Images"
+          title="OpenWrt ${ver} 路 x86_64 Images"
+          sing_box_tag="${{ steps.meta.outputs.sing_box_tag }}"
+          if [ -z "$sing_box_tag" ]; then
+            sing_box_tag="disabled"
+          fi
 
           cat > release-notes.txt <<EOF
           Official OpenWrt ${ver} x86_64 image built with ImageBuilder.
@@ -260,6 +326,7 @@ jobs:
           - Profile: ${{ steps.meta.outputs.profile }}
           - Images: ${{ steps.meta.outputs.fs }} ${{ steps.meta.outputs.images }}
           - Rootfs size: ${{ steps.meta.outputs.rootfs_partsize }} MB
+          - sing-box: ${sing_box_tag}
           - Package list: ${{ steps.meta.outputs.package_file }}
           EOF
 
