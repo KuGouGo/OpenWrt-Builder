@@ -1,0 +1,8 @@
+#!/bin/sh
+
+if [ "$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)" = "Default string" ]; then
+    mkdir -p /tmp/sysinfo
+    echo "OpenWrt Router" > /tmp/sysinfo/model
+fi
+
+exit 0
