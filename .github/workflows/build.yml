@@ -76,7 +76,9 @@ jobs:
 
           sing_box_tag=""
           sing_box_version=""
+          sing_box_pkgver=""
           sing_box_file=""
+          sing_box_repo_file=""
           sing_box_url=""
           sing_box_digest=""
           if [ "$sing_box_enabled" = "true" ]; then
@@ -87,7 +89,10 @@ jobs:
               exit 1
             fi
             sing_box_version="${sing_box_tag#v}"
+            sing_box_pkgver="${sing_box_version}-r0"
             sing_box_file="sing-box_${sing_box_version}_openwrt_x86_64.apk"
+            # ImageBuilder's local APK repo expects canonical package filenames.
+            sing_box_repo_file="sing-box-${sing_box_pkgver}.apk"
             sing_box_url="https://github.com/SagerNet/sing-box/releases/download/${sing_box_tag}/${sing_box_file}"
             sing_box_digest="$(printf '%s' "$sing_box_json" | jq -r --arg file "$sing_box_file" '.assets[] | select(.name == $file) | .digest' | head -n 1)"
             if [ -z "$sing_box_digest" ] || [ "$sing_box_digest" = "null" ]; then
@@ -111,7 +116,9 @@ jobs:
           echo "sing_box_enabled=$sing_box_enabled" >> "$GITHUB_OUTPUT"
           echo "sing_box_tag=$sing_box_tag" >> "$GITHUB_OUTPUT"
           echo "sing_box_version=$sing_box_version" >> "$GITHUB_OUTPUT"
+          echo "sing_box_pkgver=$sing_box_pkgver" >> "$GITHUB_OUTPUT"
           echo "sing_box_file=$sing_box_file" >> "$GITHUB_OUTPUT"
+          echo "sing_box_repo_file=$sing_box_repo_file" >> "$GITHUB_OUTPUT"
           echo "sing_box_url=$sing_box_url" >> "$GITHUB_OUTPUT"
           echo "sing_box_digest=$sing_box_digest" >> "$GITHUB_OUTPUT"
           echo "imagebuilder_file=openwrt-imagebuilder-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}.Linux-x86_64.tar.zst" >> "$GITHUB_OUTPUT"
@@ -189,6 +196,8 @@ jobs:
               echo "actual:   $actual_sha256" >&2
               exit 1
             fi
+            mv -f "$packages_dir/${{ steps.meta.outputs.sing_box_file }}" \
+              "$packages_dir/${{ steps.meta.outputs.sing_box_repo_file }}"
           fi
 
           find "$packages_dir" -maxdepth 1 -type f \( -name '*.apk' -o -name '*.ipk' \) -print0 | while IFS= read -r -d '' pkg; do
@@ -199,8 +208,8 @@ jobs:
           echo "count=${local_pkg_count}" >> "$GITHUB_OUTPUT"
 
           find "${GITHUB_WORKSPACE}/imagebuilder/packages" -maxdepth 1 -type f | sort > "${GITHUB_WORKSPACE}/diagnostics/local-packages.txt"
-          if [ -n "${{ steps.meta.outputs.sing_box_file }}" ] && [ -f "${GITHUB_WORKSPACE}/imagebuilder/packages/${{ steps.meta.outputs.sing_box_file }}" ]; then
-            sha256sum "${GITHUB_WORKSPACE}/imagebuilder/packages/${{ steps.meta.outputs.sing_box_file }}" | tee "${GITHUB_WORKSPACE}/diagnostics/sing-box.sha256"
+          if [ -n "${{ steps.meta.outputs.sing_box_repo_file }}" ] && [ -f "${GITHUB_WORKSPACE}/imagebuilder/packages/${{ steps.meta.outputs.sing_box_repo_file }}" ]; then
+            sha256sum "${GITHUB_WORKSPACE}/imagebuilder/packages/${{ steps.meta.outputs.sing_box_repo_file }}" | tee "${GITHUB_WORKSPACE}/diagnostics/sing-box.sha256"
           fi
 
       - name: Build image
@@ -263,7 +272,9 @@ jobs:
           package_file=${{ steps.meta.outputs.package_file }}
           sing_box_tag=${{ steps.meta.outputs.sing_box_tag }}
           sing_box_version=${{ steps.meta.outputs.sing_box_version }}
+          sing_box_pkgver=${{ steps.meta.outputs.sing_box_pkgver }}
           sing_box_file=${{ steps.meta.outputs.sing_box_file }}
+          sing_box_repo_file=${{ steps.meta.outputs.sing_box_repo_file }}
           sing_box_url=${{ steps.meta.outputs.sing_box_url }}
           sing_box_digest=${{ steps.meta.outputs.sing_box_digest }}
           build_base=${{ steps.meta.outputs.build_base }}
