@@ -15,7 +15,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install deps
         run: |
@@ -287,7 +287,7 @@ jobs:
           find imagebuilder/packages -maxdepth 1 -type f | sort > diagnostics/local-packages.txt || true
 
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: diagnostics
           path: diagnostics/
@@ -331,7 +331,7 @@ jobs:
           echo "dir=out" >> "$GITHUB_OUTPUT"
 
       - if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: openwrt-images-${{ steps.meta.outputs.ver }}
           path: ${{ steps.pick.outputs.dir }}/
