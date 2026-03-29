@@ -64,6 +64,7 @@ PACKAGES_FILE=config/packages.list
 - `files/etc/uci-defaults/97-system-cn`: sets timezone to `Asia/Shanghai` and switches to domestic NTP servers
 - `files/etc/uci-defaults/98-apk-mirror`: rewrites APK repositories to the USTC mirror
 - `files/etc/uci-defaults/99-lan-ip`: changes the LAN address to `10.0.0.1/24`
+- `files/etc/rc.local`: updates `/tmp/sysinfo/model` on every boot when DMI `product_name` matches `Default string`
 - Local `.apk` files can be dropped directly into `packages/`
 
 ## Download
