@@ -15,7 +15,9 @@ LOCK_DIR="/tmp/.sb.lock"
 LOCK_PID_FILE="${LOCK_DIR}/pid"
 TEMP_CONFIG="/tmp/sing-box-config.json.tmp"
 TEMP_PACKAGE=""
+TEMP_CONFIG_BACKUP=""
 LOCK_ACQUIRED=0
+CONFIG_HAD_PREVIOUS=0
 
 action="all"
 version=""
@@ -24,13 +26,122 @@ release_channel=""
 show_full_url=0
 core_changed=0
 config_changed=0
+config_rolled_back=0
 
-timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
-log() { printf '[%s] %s\n' "$(timestamp)" "$*" | tee -a "$LOG_FILE"; }
-info() { log "INFO  $*"; }
-warn() { log "WARN  $*"; }
-fail() { log "ERROR $*"; exit 1; }
-require_root() { [ "$(id -u)" -eq 0 ] || fail "root is required"; }
+C_RESET=''
+C_BOLD=''
+C_DIM=''
+C_RED=''
+C_GREEN=''
+C_YELLOW=''
+C_CYAN=''
+C_GREY=''
+
+setup_colors() {
+    if [ -t 1 ] && [ "${TERM:-}" != "dumb" ]; then
+        C_RESET="$(printf '\033[0m')"
+        C_BOLD="$(printf '\033[1m')"
+        C_DIM="$(printf '\033[2m')"
+        C_RED="$(printf '\033[31m')"
+        C_GREEN="$(printf '\033[32m')"
+        C_YELLOW="$(printf '\033[33m')"
+        C_CYAN="$(printf '\033[36m')"
+        C_GREY="$(printf '\033[90m')"
+    fi
+}
+
+timestamp() {
+    date '+%Y-%m-%d %H:%M:%S'
+}
+
+log() {
+    printf '[%s] %s\n' "$(timestamp)" "$*" | tee -a "$LOG_FILE"
+}
+
+info() {
+    log "INFO  $*"
+}
+
+warn() {
+    log "WARN  $*"
+}
+
+fail() {
+    log "ERROR $*"
+    exit 1
+}
+
+require_root() {
+    [ "$(id -u)" -eq 0 ] || fail "root is required"
+}
+
+ensure_root_for_settings() {
+    if [ "$(id -u)" -ne 0 ]; then
+        warn "root is required to change saved settings"
+        pause_line
+        return 1
+    fi
+    return 0
+}
+
+paint() {
+    color="$1"
+    shift
+    printf '%s%s%s' "$color" "$*" "$C_RESET"
+}
+
+hr() {
+    printf '%s\n' '------------------------------------------------------------'
+}
+
+ui_title() {
+    printf '\n'
+    hr
+    printf '%s%s%s\n' "$C_BOLD" "$1" "$C_RESET"
+    hr
+}
+
+ui_row() {
+    key="$1"
+    value="$2"
+    printf '  %-12s %s\n' "$key" "$value"
+}
+
+service_badge() {
+    case "$1" in
+        running)
+            paint "$C_GREEN" "running"
+            ;;
+        stopped)
+            paint "$C_YELLOW" "stopped"
+            ;;
+        *)
+            printf '%s' "$1"
+            ;;
+    esac
+}
+
+channel_badge() {
+    case "$1" in
+        stable)
+            paint "$C_GREEN" "stable"
+            ;;
+        beta)
+            paint "$C_YELLOW" "beta"
+            ;;
+        *)
+            printf '%s' "$1"
+            ;;
+    esac
+}
+
+config_badge() {
+    if [ -n "$1" ]; then
+        paint "$C_CYAN" "$(mask_value "$1")"
+    else
+        paint "$C_RED" "unset"
+    fi
+}
 
 usage() {
     cat <<'EOF'
@@ -41,6 +152,14 @@ Usage:
   sb show-config-url [--full]
   sb set-channel [stable|beta]
   sb show-channel
+
+Examples:
+  sb
+  sb core --stable
+  sb core --version 1.12.10
+  sb config --config-url https://example.com/config.json
+  sb set-config-url https://example.com/config.json
+  sb set-channel beta
 EOF
 }
 
@@ -48,6 +167,7 @@ cleanup() {
     [ "$LOCK_ACQUIRED" -eq 1 ] && rm -rf "$LOCK_DIR" 2>/dev/null || true
     rm -f "$TEMP_CONFIG" 2>/dev/null || true
     [ -n "$TEMP_PACKAGE" ] && rm -f "$TEMP_PACKAGE" 2>/dev/null || true
+    [ -n "$TEMP_CONFIG_BACKUP" ] && rm -f "$TEMP_CONFIG_BACKUP" 2>/dev/null || true
 }
 trap cleanup INT TERM EXIT
 
@@ -105,26 +225,34 @@ mask_value() {
     '
 }
 
-validate_config_url() {
+is_valid_config_url() {
     case "$1" in
         http://*|https://*)
             return 0
             ;;
         *)
-            fail "config url must start with http:// or https://"
+            return 1
             ;;
     esac
 }
 
-validate_release_channel() {
+validate_config_url() {
+    is_valid_config_url "$1" || fail "config url must start with http:// or https://"
+}
+
+is_valid_release_channel() {
     case "$1" in
         stable|beta)
             return 0
             ;;
         *)
-            fail "release channel must be stable or beta"
+            return 1
             ;;
     esac
+}
+
+validate_release_channel() {
+    is_valid_release_channel "$1" || fail "release channel must be stable or beta"
 }
 
 save_config_url() {
@@ -171,11 +299,15 @@ current_core_version() {
 }
 
 service_status() {
-    if pidof sing-box >/dev/null 2>&1; then
+    if service_running; then
         printf 'running\n'
     else
         printf 'stopped\n'
     fi
+}
+
+service_running() {
+    pidof sing-box >/dev/null 2>&1
 }
 
 acquire_lock() {
@@ -207,6 +339,7 @@ check_deps() {
     command -v awk >/dev/null 2>&1 || fail "awk is required"
     command -v jq >/dev/null 2>&1 || fail "jq is required"
     command -v md5sum >/dev/null 2>&1 || fail "md5sum is required"
+    command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
     [ -x "$SINGBOX_BIN" ] || fail "sing-box is not installed: $SINGBOX_BIN"
 }
 
@@ -215,6 +348,47 @@ prompt_line() {
     printf '%s' "$prompt" >&2
     IFS= read -r reply || true
     printf '%s\n' "$reply"
+}
+
+prompt_with_default() {
+    label="$1"
+    default_value="$2"
+    if [ -n "$default_value" ]; then
+        prompt="${label} [${default_value}]: "
+    else
+        prompt="${label}: "
+    fi
+    reply="$(prompt_line "$prompt")"
+    if [ -n "$reply" ]; then
+        printf '%s\n' "$reply"
+    else
+        printf '%s\n' "$default_value"
+    fi
+}
+
+confirm_yes() {
+    prompt="$1"
+    default_answer="${2:-y}"
+
+    case "$default_answer" in
+        y|Y)
+            answer="$(prompt_line "${prompt} [Y/n]: ")"
+            [ -n "$answer" ] || answer="y"
+            ;;
+        *)
+            answer="$(prompt_line "${prompt} [y/N]: ")"
+            [ -n "$answer" ] || answer="n"
+            ;;
+    esac
+
+    case "$answer" in
+        y|Y|yes|YES)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 pause_line() {
@@ -233,7 +407,7 @@ prepare_config_url_interactive() {
         return 0
     fi
 
-    printf 'Config url is not set.\n'
+    warn "config url is not set"
     temp_url="$(prompt_line 'Enter a temporary config url, or leave empty to cancel: ')"
     if [ -z "$temp_url" ]; then
         warn "config update cancelled"
@@ -241,108 +415,204 @@ prepare_config_url_interactive() {
         return 1
     fi
 
+    if ! is_valid_config_url "$temp_url"; then
+        warn "invalid config url"
+        pause_line
+        return 1
+    fi
+
     config_url="$temp_url"
-    answer="$(prompt_line 'Save this url to /etc/sb.conf? [y/N]: ')"
-    case "$answer" in
-        y|Y)
-            save_config_url "$config_url"
+    if confirm_yes "Save this url to ${SETTINGS_FILE}?" "n"; then
+        ensure_root_for_settings || return 0
+        save_config_url "$config_url"
+    fi
+    return 0
+}
+
+show_state_panel() {
+    menu_config_url="$(saved_config_url)"
+    menu_release_channel="$(saved_release_channel)"
+
+    ui_title "sb | sing-box helper"
+    ui_row "Core" "$(current_core_version)"
+    ui_row "Service" "$(service_badge "$(service_status)")"
+    ui_row "Channel" "$(channel_badge "$menu_release_channel")"
+    ui_row "Config" "$(config_badge "$menu_config_url")"
+    ui_row "Log" "$LOG_FILE"
+}
+
+show_plan_panel() {
+    ui_title "Planned action"
+    ui_row "Action" "$action"
+    case "$action" in
+        all|core)
+            if [ -n "$version" ]; then
+                ui_row "Version" "$version"
+            else
+                ui_row "Version" "latest from ${release_channel}"
+            fi
+            ui_row "Channel" "$(channel_badge "$release_channel")"
             ;;
     esac
+    case "$action" in
+        all|config)
+            ui_row "Config" "$(config_badge "$config_url")"
+            ;;
+    esac
+}
+
+change_badge() {
+    case "$1" in
+        yes)
+            paint "$C_GREEN" "updated"
+            ;;
+        no)
+            paint "$C_DIM" "unchanged"
+            ;;
+        rolled_back)
+            paint "$C_YELLOW" "rolled back"
+            ;;
+        *)
+            printf '%s' "$1"
+            ;;
+    esac
+}
+
+show_result_panel() {
+    result_config_url="$config_url"
+    [ -n "$result_config_url" ] || result_config_url="$(saved_config_url)"
+    result_channel="$(saved_release_channel)"
+
+    ui_title "Completed"
+    ui_row "Action" "$action"
+    ui_row "Core" "$(current_core_version)"
+    ui_row "Service" "$(service_badge "$(service_status)")"
+    ui_row "Channel" "$(channel_badge "$result_channel")"
+    ui_row "Config" "$(config_badge "$result_config_url")"
+    ui_row "Core diff" "$(change_badge "$1")"
+    ui_row "Config diff" "$(change_badge "$2")"
+}
+
+interactive_set_url() {
+    ensure_root_for_settings || return 0
+    temp_url="$(prompt_line 'New config url, empty to cancel: ')"
+    if [ -z "$temp_url" ]; then
+        warn "url not changed"
+        pause_line
+        return 0
+    fi
+    if ! is_valid_config_url "$temp_url"; then
+        warn "config url must start with http:// or https://"
+        pause_line
+        return 0
+    fi
+    save_config_url "$temp_url"
+    pause_line
+}
+
+interactive_show_url() {
+    menu_config_url="$(saved_config_url)"
+    if [ -z "$menu_config_url" ]; then
+        warn "config url is not set"
+        pause_line
+        return 0
+    fi
+
+    ui_title "Config url"
+    ui_row "Masked" "$(mask_value "$menu_config_url")"
+    if confirm_yes "Show full url?" "n"; then
+        ui_row "Full" "$menu_config_url"
+    fi
+    pause_line
+}
+
+interactive_set_channel() {
+    ensure_root_for_settings || return 0
+    current_channel="$(saved_release_channel)"
+    temp_channel="$(prompt_with_default 'Release channel (stable/beta)' "$current_channel")"
+    if ! is_valid_release_channel "$temp_channel"; then
+        warn "release channel must be stable or beta"
+        pause_line
+        return 0
+    fi
+    save_release_channel "$temp_channel"
+    pause_line
+}
+
+prepare_interactive_core_settings() {
+    version="$(prompt_with_default 'Version (empty = latest)' '')"
+    release_channel="$(prompt_with_default 'Release channel' "$release_channel")"
+    if ! is_valid_release_channel "$release_channel"; then
+        warn "release channel must be stable or beta"
+        pause_line
+        return 1
+    fi
     return 0
 }
 
 interactive_menu() {
     while true; do
-        menu_config_url="$(saved_config_url)"
         menu_release_channel="$(saved_release_channel)"
+        release_channel="$menu_release_channel"
+        config_url=""
+        version=""
+
+        show_state_panel
         printf '\n'
-        printf 'sb\n'
-        printf '  core    : %s\n' "$(current_core_version)"
-        printf '  service : %s\n' "$(service_status)"
-        printf '  channel : %s\n' "$menu_release_channel"
-        if [ -n "$menu_config_url" ]; then
-            printf '  config  : %s\n' "$(mask_value "$menu_config_url")"
-        else
-            printf '  config  : unset\n'
-        fi
-        printf '  log     : %s\n' "$LOG_FILE"
-        printf '\n'
-        printf '  1. all\n'
-        printf '  2. core\n'
-        printf '  3. config\n'
-        printf '  4. set-url\n'
-        printf '  5. show-url\n'
-        printf '  6. channel\n'
-        printf '  0. exit\n'
+        printf '  1. Update core and config\n'
+        printf '  2. Update core only\n'
+        printf '  3. Update config only\n'
+        printf '  4. Set config url\n'
+        printf '  5. Show config url\n'
+        printf '  6. Change release channel\n'
+        printf '  0. Exit\n'
         printf '\n'
 
-        choice="$(prompt_line 'select [1]: ')"
-        [ -n "$choice" ] || choice="1"
+        choice="$(prompt_with_default 'Select action' '1')"
 
         case "$choice" in
-            1)
+            1|all)
                 action="all"
-                version="$(prompt_line 'version, empty=latest: ')"
-                release_channel="$menu_release_channel"
-                temp_channel="$(prompt_line "channel [${release_channel}]: ")"
-                if [ -n "$temp_channel" ]; then
-                    release_channel="$temp_channel"
-                fi
-                validate_release_channel "$release_channel"
+                prepare_interactive_core_settings || continue
                 prepare_config_url_interactive || continue
-                break
+                show_plan_panel
+                if confirm_yes "Run now?" "y"; then
+                    break
+                fi
                 ;;
-            2)
+            2|core)
                 action="core"
-                version="$(prompt_line 'version, empty=latest: ')"
-                release_channel="$menu_release_channel"
-                temp_channel="$(prompt_line "channel [${release_channel}]: ")"
-                if [ -n "$temp_channel" ]; then
-                    release_channel="$temp_channel"
+                prepare_interactive_core_settings || continue
+                show_plan_panel
+                if confirm_yes "Run now?" "y"; then
+                    break
                 fi
-                validate_release_channel "$release_channel"
-                break
                 ;;
-            3)
+            3|config)
                 action="config"
-                temp_url="$(prompt_line 'temp url, empty=saved: ')"
+                temp_url="$(prompt_with_default 'Config url (empty = saved)' '')"
                 [ -n "$temp_url" ] && config_url="$temp_url"
+                if [ -n "$config_url" ] && ! is_valid_config_url "$config_url"; then
+                    warn "config url must start with http:// or https://"
+                    pause_line
+                    continue
+                fi
                 prepare_config_url_interactive || continue
-                break
-                ;;
-            4)
-                temp_url="$(prompt_line 'new url, empty=cancel: ')"
-                if [ -z "$temp_url" ]; then
-                    warn "url not changed"
-                else
-                    save_config_url "$temp_url"
+                show_plan_panel
+                if confirm_yes "Run now?" "y"; then
+                    break
                 fi
-                pause_line
                 ;;
-            5)
-                menu_config_url="$(saved_config_url)"
-                if [ -n "$menu_config_url" ]; then
-                    printf 'url: %s\n' "$(mask_value "$menu_config_url")"
-                    answer="$(prompt_line 'show full? [y/N]: ')"
-                    case "$answer" in
-                        y|Y)
-                            show_full_url=1
-                            show_config_url
-                            show_full_url=0
-                            ;;
-                    esac
-                else
-                    warn "config url is not set"
-                fi
-                pause_line
+            4|set-url)
+                interactive_set_url
                 ;;
-            6)
-                temp_channel="$(prompt_line "channel [stable/beta], current=${menu_release_channel}: ")"
-                [ -n "$temp_channel" ] || temp_channel="$menu_release_channel"
-                save_release_channel "$temp_channel"
-                pause_line
+            5|show-url)
+                interactive_show_url
                 ;;
-            0)
+            6|channel)
+                interactive_set_channel
+                ;;
+            0|exit|quit)
                 exit 0
                 ;;
             *)
@@ -424,6 +694,7 @@ parse_args() {
 detect_arch() {
     arch=""
     if [ -f /etc/os-release ]; then
+        # shellcheck source=/etc/os-release
         . /etc/os-release
         arch="${OPENWRT_ARCH:-}"
     fi
@@ -435,23 +706,30 @@ detect_arch() {
 }
 
 resolve_version() {
-    [ -n "$release_channel" ] || release_channel="$(saved_release_channel)"
-    validate_release_channel "$release_channel"
+    release_json="$(resolve_release_json)"
+    latest_version="$(printf '%s\n' "$release_json" | jq -r '.tag_name' | sed 's/^v//')"
+    [ -n "$latest_version" ] && [ "$latest_version" != "null" ] || fail "failed to resolve sing-box version"
+    printf '%s\n' "$latest_version"
+}
 
+resolve_release_json() {
     if [ -n "$version" ]; then
-        printf '%s\n' "$version"
+        curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL \
+            "https://api.github.com/repos/SagerNet/sing-box/releases/tags/v${version}"
         return 0
     fi
 
+    [ -n "$release_channel" ] || release_channel="$(saved_release_channel)"
+    validate_release_channel "$release_channel"
+
     if [ "$release_channel" = "stable" ]; then
-        release_json="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest)"
-        latest_version="$(printf '%s\n' "$release_json" | jq -r '.tag_name' | sed 's/^v//')"
+        curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL \
+            "https://api.github.com/repos/SagerNet/sing-box/releases/latest"
     else
-        release_json="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL https://api.github.com/repos/SagerNet/sing-box/releases)"
-        latest_version="$(printf '%s\n' "$release_json" | jq -r 'map(select(.prerelease == true))[0].tag_name' | sed 's/^v//')"
+        curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL \
+            "https://api.github.com/repos/SagerNet/sing-box/releases" |
+            jq -c 'map(select(.prerelease == true))[0]'
     fi
-    [ -n "$latest_version" ] && [ "$latest_version" != "null" ] || fail "failed to resolve sing-box version"
-    printf '%s\n' "$latest_version"
 }
 
 resolve_config_url() {
@@ -469,9 +747,12 @@ resolve_config_url() {
 
 update_core() {
     arch="$(detect_arch)"
-    resolved_version="$(resolve_version)"
+    release_json="$(resolve_release_json)"
+    release_tag="$(printf '%s\n' "$release_json" | jq -r '.tag_name')"
+    [ -n "$release_tag" ] && [ "$release_tag" != "null" ] || fail "failed to resolve sing-box release tag"
+    resolved_version="${release_tag#v}"
     file="sing-box_${resolved_version}_openwrt_${arch}.apk"
-    url="https://github.com/SagerNet/sing-box/releases/download/v${resolved_version}/${file}"
+    url="https://github.com/SagerNet/sing-box/releases/download/${release_tag}/${file}"
     current_version="$(current_core_version)"
 
     if [ "$current_version" = "$resolved_version" ]; then
@@ -479,15 +760,34 @@ update_core() {
         return 0
     fi
 
+    expected_sha256="$(printf '%s\n' "$release_json" | jq -r --arg file "$file" '.assets[] | select(.name == $file) | .digest' | head -n 1)"
+    [ -n "$expected_sha256" ] && [ "$expected_sha256" != "null" ] || fail "failed to resolve digest for $file"
+    expected_sha256="${expected_sha256#sha256:}"
+
     TEMP_PACKAGE="/tmp/${file}"
 
     info "downloading $url"
     curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 300 -fL "$url" -o "$TEMP_PACKAGE"
 
+    actual_sha256="$(sha256sum "$TEMP_PACKAGE" | awk '{print $1}')"
+    [ "$actual_sha256" = "$expected_sha256" ] || fail "download digest mismatch for $file"
+
     info "installing $file"
     apk add --allow-untrusted "$TEMP_PACKAGE"
     core_changed=1
     info "sing-box core updated to ${resolved_version}"
+}
+
+backup_current_config() {
+    TEMP_CONFIG_BACKUP=""
+    CONFIG_HAD_PREVIOUS=0
+
+    if [ -f "$CONFIG_FILE" ]; then
+        TEMP_CONFIG_BACKUP="/tmp/sing-box-config.json.bak.$$"
+        cp -f "$CONFIG_FILE" "$TEMP_CONFIG_BACKUP" || fail "failed to back up existing config"
+        chmod 0600 "$TEMP_CONFIG_BACKUP" 2>/dev/null || true
+        CONFIG_HAD_PREVIOUS=1
+    fi
 }
 
 update_config() {
@@ -508,30 +808,64 @@ update_config() {
     fi
 
     mkdir -p "$CONFIG_DIR"
+    backup_current_config
     mv -f "$TEMP_CONFIG" "$CONFIG_FILE"
     chmod 0644 "$CONFIG_FILE"
     config_changed=1
     info "config updated"
 }
 
-restart_service() {
+rollback_config_update() {
+    if [ "$CONFIG_HAD_PREVIOUS" -eq 1 ] && [ -n "$TEMP_CONFIG_BACKUP" ] && [ -f "$TEMP_CONFIG_BACKUP" ]; then
+        warn "service restart failed, restoring previous sing-box config"
+        cp -f "$TEMP_CONFIG_BACKUP" "$CONFIG_FILE" || fail "failed to restore previous config"
+        chmod 0644 "$CONFIG_FILE"
+        config_changed=0
+        config_rolled_back=1
+        return 0
+    fi
+
+    warn "service restart failed and no previous config is available, removing updated config"
+    rm -f "$CONFIG_FILE" 2>/dev/null || true
+    return 1
+}
+
+restart_service_once() {
     [ -x "$INITD" ] || {
         warn "init script not found, skipped service restart"
         return 0
     }
 
     info "restarting sing-box service"
-    "$INITD" restart >/dev/null 2>&1 || fail "failed to restart sing-box"
+    "$INITD" restart >/dev/null 2>&1 || return 1
     sleep 3
 
-    if pidof sing-box >/dev/null 2>&1; then
+    service_running
+}
+
+restart_service() {
+    if restart_service_once; then
         info "sing-box service is running"
-    else
-        fail "sing-box service did not start successfully"
+        return 0
     fi
+
+    if [ "$config_changed" -eq 1 ]; then
+        if rollback_config_update; then
+            warn "retrying sing-box with the previous config"
+            restart_service_once || fail "failed to restart sing-box after restoring previous config"
+            info "sing-box service is running"
+            warn "new config was rolled back after restart failure"
+            return 0
+        fi
+
+        fail "failed to restart sing-box and no previous config was available to restore"
+    fi
+
+    fail "failed to restart sing-box"
 }
 
 main() {
+    setup_colors
     parse_args "$@"
 
     case "$action" in
@@ -600,6 +934,17 @@ main() {
     fi
 
     info "done"
+    if is_interactive_terminal; then
+        core_state="no"
+        config_state="no"
+        [ "$core_changed" -eq 1 ] && core_state="yes"
+        if [ "$config_rolled_back" -eq 1 ]; then
+            config_state="rolled_back"
+        elif [ "$config_changed" -eq 1 ]; then
+            config_state="yes"
+        fi
+        show_result_panel "$core_state" "$config_state"
+    fi
 }
 
 main "$@"

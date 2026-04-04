@@ -173,6 +173,30 @@ jobs:
             rsync -a files/ imagebuilder/files/
           fi
 
+      - name: Validate overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required_exec=(
+            imagebuilder/files/usr/bin/zb
+            imagebuilder/files/usr/bin/cf
+            imagebuilder/files/usr/bin/sb
+            imagebuilder/files/etc/init.d/owb-boot
+            imagebuilder/files/etc/uci-defaults/95-zb-base
+          )
+
+          : > diagnostics/overlay-checks.txt
+          for path in "${required_exec[@]}"; do
+            [ -f "$path" ] || { echo "missing overlay file: $path" >&2; exit 1; }
+            [ -x "$path" ] || {
+              echo "overlay file is not executable: $path" >&2
+              ls -l "$path" >&2
+              exit 1
+            }
+            stat -c '%A %n' "$path" | tee -a diagnostics/overlay-checks.txt
+          done
+
       - name: Prepare local packages
         id: local-packages
         shell: bash
@@ -285,6 +309,7 @@ jobs:
           cp -f config/build.conf diagnostics/build.conf
           [ -f imagebuilder/repositories ] && cp -f imagebuilder/repositories diagnostics/
           find imagebuilder/packages -maxdepth 1 -type f | sort > diagnostics/local-packages.txt || true
+          find imagebuilder/files -maxdepth 5 -type f | sort > diagnostics/files-overlay.txt || true
 
       - if: always()
         uses: actions/upload-artifact@v7

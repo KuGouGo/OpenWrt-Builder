@@ -1,0 +1,146 @@
+#!/bin/sh
+
+set -eu
+
+[ -x /usr/sbin/nginx ] || exit 0
+
+env_file='/etc/openwrt-builder/cloudflare.env'
+host='zashboard.kugougou.store'
+lan_ip='192.168.1.1'
+loopback_ip='127.0.0.1'
+
+remove_rule_conflicts() {
+    local keep_section="$1"
+    local name="$2"
+    local existing
+
+    for existing in $(uci -q show firewall | sed -n "s/^firewall\.\(.*\)\.name='${name}'$/\1/p"); do
+        [ "$existing" = "$keep_section" ] && continue
+        uci -q delete "firewall.${existing}"
+    done
+}
+
+ensure_rule() {
+    local section="$1"
+    local name="$2"
+    local port="$3"
+    local family="$4"
+
+    remove_rule_conflicts "$section" "$name"
+    uci -q set "firewall.${section}=rule"
+    uci -q set "firewall.${section}.name=${name}"
+    uci -q set "firewall.${section}.src=wan"
+    uci -q set "firewall.${section}.proto=tcp"
+    uci -q set "firewall.${section}.dest_port=${port}"
+    uci -q set "firewall.${section}.family=${family}"
+    uci -q set "firewall.${section}.target=ACCEPT"
+}
+
+if [ -r "$env_file" ]; then
+    # shellcheck source=/etc/openwrt-builder/cloudflare.env
+    . "$env_file"
+fi
+
+host="${ZASHBOARD_HOST:-$host}"
+
+uci_lan_ip="$(uci -q get network.lan.ipaddr 2>/dev/null || true)"
+if [ -n "$uci_lan_ip" ]; then
+    lan_ip="$uci_lan_ip"
+fi
+lan_ip="${LAN_IP:-$lan_ip}"
+lan_ip="${lan_ip%%/*}"
+
+ssl_cert='/etc/nginx/conf.d/_lan.crt'
+ssl_key='/etc/nginx/conf.d/_lan.key'
+acme_cert="/etc/acme/${host}/fullchain.cer"
+acme_key="/etc/acme/${host}/${host}.key"
+
+if [ -s "$acme_cert" ] && [ -s "$acme_key" ]; then
+    ssl_cert="$acme_cert"
+    ssl_key="$acme_key"
+fi
+
+mkdir -p /etc/nginx/conf.d
+
+cat > /etc/nginx/conf.d/luci-ssl.conf <<EOF
+server {
+    listen ${lan_ip}:443 ssl default_server;
+    listen ${loopback_ip}:443 ssl;
+    server_name _lan ${lan_ip} localhost ${loopback_ip};
+
+    ssl_certificate     /etc/nginx/conf.d/_lan.crt;
+    ssl_certificate_key /etc/nginx/conf.d/_lan.key;
+
+    access_log off;
+
+    location = / {
+        return 302 /cgi-bin/luci/;
+    }
+
+    include conf.d/*.locations;
+}
+EOF
+
+cat > /etc/nginx/conf.d/zashboard.conf <<EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${host};
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name ${host};
+
+    ssl_certificate     ${ssl_cert};
+    ssl_certificate_key ${ssl_key};
+
+    location = / {
+        return 302 /ui/;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:21107;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection upgrade;
+    }
+}
+EOF
+
+if [ -x /etc/init.d/uhttpd ]; then
+    /etc/init.d/uhttpd disable >/dev/null 2>&1 || true
+    /etc/init.d/uhttpd stop >/dev/null 2>&1 || true
+fi
+
+if [ -x /etc/init.d/nginx ]; then
+    /etc/init.d/nginx enable >/dev/null 2>&1 || true
+fi
+
+uci -q set nginx.global.uci_enable='true'
+uci -q del nginx._lan.listen
+uci -q add_list nginx._lan.listen="${lan_ip}:80 default_server"
+uci -q add_list nginx._lan.listen="${loopback_ip}:80"
+uci -q commit nginx
+
+ensure_rule 'zb_https_v4' 'Allow-zashboard-HTTPS' '443' 'ipv4'
+ensure_rule 'zb_http_v4' 'Allow-zashboard-HTTP' '80' 'ipv4'
+ensure_rule 'zb_https_v6' 'Allow-zashboard-HTTPS-v6' '443' 'ipv6'
+ensure_rule 'zb_http_v6' 'Allow-zashboard-HTTP-v6' '80' 'ipv6'
+uci -q commit firewall
+
+/etc/init.d/firewall restart >/dev/null 2>&1 || true
+
+if nginx -t -c /etc/nginx/uci.conf >/dev/null 2>&1; then
+    /etc/init.d/nginx reload >/dev/null 2>&1 || /etc/init.d/nginx restart >/dev/null 2>&1 || true
+fi
+
+exit 0

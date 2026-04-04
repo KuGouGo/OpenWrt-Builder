@@ -1,10 +1,29 @@
+# Core network stack
 apk-openssl
 dnsmasq-full
 libustream-openssl
+
+# Replace defaults we do not want in this image
 -apk-mbedtls
 -dnsmasq
 -libustream-mbedtls
+-uhttpd
+-uhttpd-mod-ubus
 
+# DDNS + ACME
+# Minimal DDNS runtime for Cloudflare is:
+#   ddns-scripts
+#   ddns-scripts-cloudflare
+#   ddns-scripts-services
+# LuCI management is provided separately below.
+acme-acmesh
+acme-acmesh-dnsapi
+acme-common
+ddns-scripts
+ddns-scripts-cloudflare
+ddns-scripts-services
+
+# Base utilities
 bash
 curl
 ethtool
@@ -15,16 +34,35 @@ jq
 kmod-tcp-bbr
 kmod-tun
 lsblk
-luci
+
+# LuCI and LuCI apps
+# Use luci-nginx as the default LuCI collection to match the nginx web stack.
+luci-nginx
+luci-app-ddns
 luci-app-firewall
 luci-app-package-manager
 luci-i18n-base-zh-cn
+luci-i18n-ddns-zh-cn
 luci-i18n-firewall-zh-cn
 luci-i18n-package-manager-zh-cn
+
+# Nginx + LuCI runtime
+nginx-mod-brotli
+nginx-mod-luci
+nginx-mod-ubus
+nginx-mod-zstd
+nginx-ssl
+nginx-ssl-util
+
+# Services and admin tools
 openssh-sftp-server
 owut
 pciutils
 sing-box
+uwsgi
+uwsgi-cgi-plugin
+uwsgi-luci-support
+uwsgi-syslog-plugin
 usbutils
 wget-ssl
 zoneinfo-asia

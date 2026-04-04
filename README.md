@@ -61,11 +61,53 @@ PACKAGES_FILE=config/packages.list
 - Preserves diagnostics even when the build fails
 - Enables `ADD_LOCAL_KEY=1` automatically when local packages are present
 - Keeps x86/64 generic profile defaults implicit in `config/packages.list`, including common NIC drivers
+- Replaces the default `uhttpd` stack with a preinstalled `nginx + uwsgi` stack for LuCI and zashboard
 - `files/etc/uci-defaults/97-system-cn`: sets timezone to `Asia/Shanghai` and switches to domestic NTP servers
 - `files/etc/uci-defaults/98-apk-mirror`: rewrites APK repositories to the USTC mirror
-- `files/etc/uci-defaults/99-lan-ip`: changes the LAN address to `10.0.0.1/24`
-- `files/etc/rc.local`: updates `/tmp/sysinfo/model` on every boot when DMI `product_name` matches `Default string`
+- `files/etc/uci-defaults/95-zb-base`: enables and runs the recurring boot reconcile service on first boot
+- `files/etc/init.d/owb-boot`: reruns the boot-time reconcile logic on every startup and refreshes the DMI-based model label when needed
 - Local `.apk` files can be dropped directly into `packages/`
+
+## Zashboard Stack
+
+This repository includes the web stack, DDNS, and ACME helpers needed for the current `zashboard.kugougou.store` layout:
+
+- `luci-nginx` is used as the default LuCI collection
+- `nginx` + `uwsgi` are installed by default
+- Cloudflare DDNS for both `A` and `AAAA`
+- ACME via `acme-acmesh` + Cloudflare DNS validation
+
+The repository does **not** store the live Cloudflare token.
+
+Conflict handling built into the image:
+
+- `uhttpd` and `uhttpd-mod-ubus` are explicitly excluded at build time
+- the LuCI collection itself is switched to `luci-nginx`, mirroring the same high-level approach used by `sbwml/r4s_build_script`
+- `zb` disables and stops `uhttpd` again on first boot if it is still present for any reason
+- the first-boot script writes the LuCI and zashboard nginx vhosts, keeps LuCI on the default LAN address `192.168.1.1`, also keeps a localhost listener on `127.0.0.1`, and opens zashboard `80/443` for both IPv4 and IPv6
+- `owb-boot` is a standard OpenWrt init script, so the nginx helper is re-run on every boot without depending on `rc.local`
+
+Expected effect after a fresh flash:
+
+1. `nginx` is the active web server instead of `uhttpd`
+2. `http://192.168.1.1/` and `https://192.168.1.1/` serve LuCI by default, and LuCI also remains reachable locally on `127.0.0.1`
+3. `zashboard.kugougou.store` vhost is created immediately and proxies to `127.0.0.1:21107`
+4. Before ACME is configured and the certificate is issued, the zashboard vhost will fall back to the local `_lan` certificate
+5. After you provide the Cloudflare token and issue the ACME certificate, the next reboot or a manual start of `/etc/init.d/owb-boot` will switch the vhost to the trusted domain certificate
+
+After flashing the image:
+
+1. Copy `/etc/openwrt-builder/cloudflare.env.example` to `/etc/openwrt-builder/cloudflare.env` on the router and fill in `CF_TOKEN` and `ACME_EMAIL`.
+2. Run `/usr/bin/cf`.
+3. Start or restart `ddns` and `acme`.
+4. After the first ACME issuance completes, either reboot once or run `/etc/init.d/owb-boot start` to switch the zashboard vhost to the issued certificate immediately.
+
+Validation notes for this repository version:
+
+- the build will include the required `nginx`, `uwsgi`, `ddns`, and `acme` packages directly from `config/packages.list`
+- the recurring boot reconcile is implemented in `files/etc/init.d/owb-boot`
+- the nginx handoff logic itself remains in `files/etc/uci-defaults/95-zb-base` and `/usr/bin/zb`
+- `/usr/bin/zb` is idempotent, so rerunning it should only reconcile the expected nginx and firewall state
 
 ## Download
 
