@@ -50,7 +50,6 @@ luci-i18n-package-manager-zh-cn
 nginx-mod-brotli
 nginx-mod-luci
 nginx-mod-ubus
-nginx-mod-zstd
 nginx-ssl
 nginx-ssl-util
 
