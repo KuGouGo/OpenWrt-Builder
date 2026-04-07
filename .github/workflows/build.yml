@@ -18,9 +18,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl jq tar zstd rsync gh
+        run: sudo apt-get install -y -q --no-install-recommends curl jq tar zstd rsync gh
 
       - name: Resolve metadata
         id: meta
@@ -66,11 +64,12 @@ jobs:
             sing_box_enabled="true"
           fi
 
-          json="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL https://api.github.com/repos/openwrt/openwrt/releases/latest)"
-          tag="$(printf '%s' "$json" | jq -r '.tag_name')"
+          openwrt_json="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 \
+            -fsSL https://api.github.com/repos/openwrt/openwrt/releases/latest)"
+          tag="$(printf '%s' "$openwrt_json" | jq -r '.tag_name')"
           ver="${tag#v}"
           if [ -z "$tag" ] || [ "$tag" = "null" ]; then
-            echo "failed to get latest official release" >&2
+            echo "failed to get latest OpenWrt release" >&2
             exit 1
           fi
 
@@ -82,7 +81,8 @@ jobs:
           sing_box_url=""
           sing_box_digest=""
           if [ "$sing_box_enabled" = "true" ]; then
-            sing_box_json="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest)"
+            sing_box_json="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 \
+              -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest)"
             sing_box_tag="$(printf '%s' "$sing_box_json" | jq -r '.tag_name')"
             if [ -z "$sing_box_tag" ] || [ "$sing_box_tag" = "null" ]; then
               echo "failed to get latest sing-box release" >&2
@@ -94,34 +94,39 @@ jobs:
             # ImageBuilder's local APK repo expects canonical package filenames.
             sing_box_repo_file="sing-box-${sing_box_pkgver}.apk"
             sing_box_url="https://github.com/SagerNet/sing-box/releases/download/${sing_box_tag}/${sing_box_file}"
-            sing_box_digest="$(printf '%s' "$sing_box_json" | jq -r --arg file "$sing_box_file" '.assets[] | select(.name == $file) | .digest' | head -n 1)"
+            sing_box_digest="$(printf '%s' "$sing_box_json" \
+              | jq -r --arg file "$sing_box_file" \
+                '.assets[] | select(.name == $file) | .digest' \
+              | head -n 1)"
             if [ -z "$sing_box_digest" ] || [ "$sing_box_digest" = "null" ]; then
               echo "failed to get digest for ${sing_box_file}" >&2
               exit 1
             fi
           fi
 
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "ver=$ver" >> "$GITHUB_OUTPUT"
-          echo "target=$OPENWRT_TARGET" >> "$GITHUB_OUTPUT"
+          ib_file="openwrt-imagebuilder-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}.Linux-x86_64.tar.zst"
+
+          echo "tag=$tag"                   >> "$GITHUB_OUTPUT"
+          echo "ver=$ver"                   >> "$GITHUB_OUTPUT"
+          echo "target=$OPENWRT_TARGET"     >> "$GITHUB_OUTPUT"
           echo "subtarget=$OPENWRT_SUBTARGET" >> "$GITHUB_OUTPUT"
-          echo "profile=$OPENWRT_PROFILE" >> "$GITHUB_OUTPUT"
-          echo "fs=$OPENWRT_FS" >> "$GITHUB_OUTPUT"
-          echo "images<<EOF" >> "$GITHUB_OUTPUT"
-          printf '%s\n' "$OPENWRT_IMAGES" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-          echo "build_base=$BUILD_BASE" >> "$GITHUB_OUTPUT"
+          echo "profile=$OPENWRT_PROFILE"   >> "$GITHUB_OUTPUT"
+          echo "fs=$OPENWRT_FS"             >> "$GITHUB_OUTPUT"
+          echo "images<<EOF"                >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$OPENWRT_IMAGES"   >> "$GITHUB_OUTPUT"
+          echo "EOF"                        >> "$GITHUB_OUTPUT"
+          echo "build_base=$BUILD_BASE"     >> "$GITHUB_OUTPUT"
           echo "rootfs_partsize=$ROOTFS_PARTSIZE" >> "$GITHUB_OUTPUT"
           echo "package_file=$PACKAGES_FILE" >> "$GITHUB_OUTPUT"
           echo "sing_box_enabled=$sing_box_enabled" >> "$GITHUB_OUTPUT"
           echo "sing_box_tag=$sing_box_tag" >> "$GITHUB_OUTPUT"
           echo "sing_box_version=$sing_box_version" >> "$GITHUB_OUTPUT"
-          echo "sing_box_pkgver=$sing_box_pkgver" >> "$GITHUB_OUTPUT"
-          echo "sing_box_file=$sing_box_file" >> "$GITHUB_OUTPUT"
+          echo "sing_box_pkgver=$sing_box_pkgver"   >> "$GITHUB_OUTPUT"
+          echo "sing_box_file=$sing_box_file"       >> "$GITHUB_OUTPUT"
           echo "sing_box_repo_file=$sing_box_repo_file" >> "$GITHUB_OUTPUT"
-          echo "sing_box_url=$sing_box_url" >> "$GITHUB_OUTPUT"
-          echo "sing_box_digest=$sing_box_digest" >> "$GITHUB_OUTPUT"
-          echo "imagebuilder_file=openwrt-imagebuilder-${ver}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}.Linux-x86_64.tar.zst" >> "$GITHUB_OUTPUT"
+          echo "sing_box_url=$sing_box_url"         >> "$GITHUB_OUTPUT"
+          echo "sing_box_digest=$sing_box_digest"   >> "$GITHUB_OUTPUT"
+          echo "ib_file=$ib_file"                   >> "$GITHUB_OUTPUT"
           echo "target_dir=imagebuilder/bin/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}" >> "$GITHUB_OUTPUT"
 
       - name: Build summary
@@ -129,9 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           sing_box_tag="${{ steps.meta.outputs.sing_box_tag }}"
-          if [ -z "$sing_box_tag" ]; then
-            sing_box_tag="disabled"
-          fi
+          [ -n "$sing_box_tag" ] || sing_box_tag="disabled"
 
           pkg_count="$(awk '
             {
@@ -152,15 +155,44 @@ jobs:
           echo "Packages file          : ${{ steps.meta.outputs.package_file }}"
           echo "Unique package entries : $pkg_count"
           echo "Build source           : ${{ steps.meta.outputs.build_base }}"
-          echo "Output dir             : out/"
+
+      - name: Restore imagebuilder cache
+        id: ib-cache
+        uses: actions/cache@v4
+        with:
+          path: ib.tar.zst
+          key: ib-${{ steps.meta.outputs.ver }}-${{ steps.meta.outputs.target }}-${{ steps.meta.outputs.subtarget }}
 
       - name: Download imagebuilder
+        if: steps.ib-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
-          url="${{ steps.meta.outputs.build_base }}/releases/${{ steps.meta.outputs.ver }}/targets/${{ steps.meta.outputs.target }}/${{ steps.meta.outputs.subtarget }}/${{ steps.meta.outputs.imagebuilder_file }}"
-          echo "Downloading imagebuilder: $url"
-          curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 180 -fL "$url" -o ib.tar.zst
+          base="${{ steps.meta.outputs.build_base }}/releases/${{ steps.meta.outputs.ver }}/targets/${{ steps.meta.outputs.target }}/${{ steps.meta.outputs.subtarget }}"
+          ib_file="${{ steps.meta.outputs.ib_file }}"
+
+          echo "Downloading: ${base}/${ib_file}"
+          curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 180 \
+            -fL "${base}/${ib_file}" -o ib.tar.zst
+
+          echo "Verifying SHA256..."
+          curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 30 \
+            -fsSL "${base}/sha256sums" -o ib.sha256sums
+          expected="$(grep -F "$ib_file" ib.sha256sums | awk '{print $1}')"
+          [ -n "$expected" ] || { echo "hash for $ib_file not found in sha256sums" >&2; exit 1; }
+          actual="$(sha256sum ib.tar.zst | awk '{print $1}')"
+          if [ "$actual" != "$expected" ]; then
+            echo "imagebuilder SHA256 mismatch" >&2
+            echo "expected: $expected" >&2
+            echo "actual:   $actual" >&2
+            exit 1
+          fi
+          echo "SHA256 verified."
+
+      - name: Extract imagebuilder
+        shell: bash
+        run: |
+          set -euo pipefail
           tar --zstd -xf ib.tar.zst
           mv openwrt-imagebuilder-* imagebuilder
 
@@ -180,7 +212,7 @@ jobs:
 
           required_exec=(
             imagebuilder/files/usr/bin/sb
-            imagebuilder/files/etc/uci-defaults/99-apk-immortalwrt
+            imagebuilder/files/etc/uci-defaults/95-apk-immortalwrt
           )
 
           : > diagnostics/overlay-checks.txt
@@ -203,11 +235,14 @@ jobs:
           mkdir -p "$packages_dir"
 
           if [ "${{ steps.meta.outputs.sing_box_enabled }}" = "true" ]; then
-            rm -f "$packages_dir"/sing-box_*_openwrt_x86_64.apk "$packages_dir"/sing-box_*_openwrt_x86_64.ipk
-            rm -f "$packages_dir"/sing-box-*.apk "$packages_dir"/sing-box-*.ipk
+            rm -f "$packages_dir"/sing-box_*_openwrt_x86_64.apk \
+                  "$packages_dir"/sing-box-*.apk \
+                  "$packages_dir"/sing-box-*.ipk
+
             curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 300 -fL \
               "${{ steps.meta.outputs.sing_box_url }}" \
               -o "$packages_dir/${{ steps.meta.outputs.sing_box_file }}"
+
             actual_sha256="$(sha256sum "$packages_dir/${{ steps.meta.outputs.sing_box_file }}" | awk '{print $1}')"
             expected_sha256="${{ steps.meta.outputs.sing_box_digest }}"
             expected_sha256="${expected_sha256#sha256:}"
@@ -217,20 +252,26 @@ jobs:
               echo "actual:   $actual_sha256" >&2
               exit 1
             fi
+
             mv -f "$packages_dir/${{ steps.meta.outputs.sing_box_file }}" \
               "$packages_dir/${{ steps.meta.outputs.sing_box_repo_file }}"
           fi
 
-          find "$packages_dir" -maxdepth 1 -type f \( -name '*.apk' -o -name '*.ipk' \) -print0 | while IFS= read -r -d '' pkg; do
-            cp -f "$pkg" "${GITHUB_WORKSPACE}/imagebuilder/packages/"
-          done
+          find "$packages_dir" -maxdepth 1 -type f \( -name '*.apk' -o -name '*.ipk' \) -print0 \
+            | while IFS= read -r -d '' pkg; do
+                cp -f "$pkg" "${GITHUB_WORKSPACE}/imagebuilder/packages/"
+              done
 
-          local_pkg_count="$(find "${GITHUB_WORKSPACE}/imagebuilder/packages" -maxdepth 1 -type f \( -name '*.apk' -o -name '*.ipk' \) | wc -l | awk '{print $1}')"
+          local_pkg_count="$(find "${GITHUB_WORKSPACE}/imagebuilder/packages" \
+            -maxdepth 1 -type f \( -name '*.apk' -o -name '*.ipk' \) | wc -l | tr -d ' ')"
           echo "count=${local_pkg_count}" >> "$GITHUB_OUTPUT"
 
-          find "${GITHUB_WORKSPACE}/imagebuilder/packages" -maxdepth 1 -type f | sort > "${GITHUB_WORKSPACE}/diagnostics/local-packages.txt"
-          if [ -n "${{ steps.meta.outputs.sing_box_repo_file }}" ] && [ -f "${GITHUB_WORKSPACE}/imagebuilder/packages/${{ steps.meta.outputs.sing_box_repo_file }}" ]; then
-            sha256sum "${GITHUB_WORKSPACE}/imagebuilder/packages/${{ steps.meta.outputs.sing_box_repo_file }}" | tee "${GITHUB_WORKSPACE}/diagnostics/sing-box.sha256"
+          find "${GITHUB_WORKSPACE}/imagebuilder/packages" -maxdepth 1 -type f | sort \
+            > "${GITHUB_WORKSPACE}/diagnostics/local-packages.txt"
+          if [ -n "${{ steps.meta.outputs.sing_box_repo_file }}" ] \
+             && [ -f "${GITHUB_WORKSPACE}/imagebuilder/packages/${{ steps.meta.outputs.sing_box_repo_file }}" ]; then
+            sha256sum "${GITHUB_WORKSPACE}/imagebuilder/packages/${{ steps.meta.outputs.sing_box_repo_file }}" \
+              | tee "${GITHUB_WORKSPACE}/diagnostics/sing-box.sha256"
           fi
 
       - name: Build image
@@ -304,9 +345,14 @@ jobs:
           find imagebuilder/bin/targets -maxdepth 3 -type f | sort > diagnostics/tree.txt || true
           cp -f "${{ steps.meta.outputs.package_file }}" diagnostics/packages.list
           cp -f config/build.conf diagnostics/build.conf
-          [ -f imagebuilder/repositories ] && cp -f imagebuilder/repositories diagnostics/
+
+          # APK-based imagebuilder may place the repo list at different paths.
+          find imagebuilder -maxdepth 2 \
+            \( -name 'repositories' -o -name 'repositories.conf' \) \
+            -type f -exec cp -f {} diagnostics/repositories \; 2>/dev/null || true
+
           find imagebuilder/packages -maxdepth 1 -type f | sort > diagnostics/local-packages.txt || true
-          find imagebuilder/files -maxdepth 5 -type f | sort > diagnostics/files-overlay.txt || true
+          find imagebuilder/files    -maxdepth 5 -type f | sort > diagnostics/files-overlay.txt  || true
 
       - if: always()
         uses: actions/upload-artifact@v7
@@ -322,7 +368,7 @@ jobs:
           set -euo pipefail
           dir="${{ steps.meta.outputs.target_dir }}"
           mkdir -p out
-          found=0
+          images_found=0
 
           while IFS= read -r image_name; do
             [ -n "$image_name" ] || continue
@@ -330,7 +376,9 @@ jobs:
             src="${dir}/${want}"
 
             if [ ! -f "$src" ]; then
-              src="$(find "$dir" -maxdepth 1 -type f -name "*${{ steps.meta.outputs.profile }}*${{ steps.meta.outputs.fs }}*${image_name}" | sort | head -n 1)"
+              src="$(find "$dir" -maxdepth 1 -type f \
+                -name "*${{ steps.meta.outputs.profile }}*${{ steps.meta.outputs.fs }}*${image_name}" \
+                | sort | head -n 1)"
             fi
 
             if [ -z "$src" ] || [ ! -f "$src" ]; then
@@ -341,13 +389,14 @@ jobs:
 
             cp -f "$src" "out/$want"
             sha256sum "out/$want" > "out/$want.sha256"
-            found=1
+            images_found=$((images_found + 1))
           done < <(printf '%s\n' "${{ steps.meta.outputs.images }}" | xargs -n1)
 
-          if [ "$found" -ne 1 ]; then
+          if [ "$images_found" -eq 0 ]; then
             echo "no images were collected" >&2
             exit 1
           fi
+          echo "Collected ${images_found} image(s)."
 
           find out -maxdepth 1 -type f | sort > out/manifest.txt
           echo "dir=out" >> "$GITHUB_OUTPUT"
@@ -368,26 +417,23 @@ jobs:
           set -euo pipefail
           tag="${{ steps.meta.outputs.tag }}"
           ver="${{ steps.meta.outputs.ver }}"
-          title="OpenWrt ${ver} for x86_64"
+          title="OpenWrt ${ver} · x86_64"
           sing_box_tag="${{ steps.meta.outputs.sing_box_tag }}"
-          if [ -z "$sing_box_tag" ]; then
-            sing_box_tag="disabled"
-          fi
+          [ -n "$sing_box_tag" ] || sing_box_tag="disabled"
 
           cat > release-notes.txt <<EOF
-          This release provides a ready-to-use OpenWrt ${ver} build for x86_64, produced with the official ImageBuilder and tailored for a clean UEFI deployment workflow.
+          基于官方 ImageBuilder 自动构建的 OpenWrt ${ver} x86_64 镜像。
 
-          Highlights
-          - Based on the latest official OpenWrt release
-          - Built for ${{ steps.meta.outputs.target }}/${{ steps.meta.outputs.subtarget }} with the `${{ steps.meta.outputs.profile }}` profile
-          - Image format: ${{ steps.meta.outputs.fs }} ${{ steps.meta.outputs.images }}
-          - Root filesystem size: ${{ steps.meta.outputs.rootfs_partsize }} MB
-          - sing-box package: ${sing_box_tag}
-          - Package definition: ${{ steps.meta.outputs.package_file }}
+          **构建信息**
+          - OpenWrt 版本：${ver}
+          - 目标平台：${{ steps.meta.outputs.target }}/${{ steps.meta.outputs.subtarget }}，配置：${{ steps.meta.outputs.profile }}
+          - 镜像格式：${{ steps.meta.outputs.fs }} / ${{ steps.meta.outputs.images }}
+          - 根分区大小：${{ steps.meta.outputs.rootfs_partsize }} MB
+          - sing-box：${sing_box_tag}
 
-          Notes
-          - Includes repository customizations from the `files/` overlay and local packages from `packages/`
-          - Diagnostics and manifests are published alongside the build artifacts for easier verification
+          **说明**
+          - 包含 \`files/\` overlay 和 \`packages/\` 本地软件包
+          - 构建诊断信息（日志、包列表、文件清单）以 artifact 形式随构建保留
           EOF
 
           if gh release view "$tag" >/dev/null 2>&1; then

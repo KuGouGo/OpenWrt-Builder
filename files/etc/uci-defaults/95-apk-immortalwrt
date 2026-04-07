@@ -18,7 +18,7 @@ ver="$(printf '%s\n' "$DISTRIB_RELEASE" | awk -F. '{printf "%s.%s", $1, $2}')"
 [ -n "$ver" ] && [ "$ver" != "." ] || exit 0
 
 mkdir -p "$(dirname "$REPO_FILE")"
-printf 'https://downloads.immortalwrt.org/releases/packages-%s/x86_64\n' "$ver" \
-    > "$REPO_FILE"
+base="https://downloads.immortalwrt.org/releases/packages-${ver}/x86_64"
+printf '%s\n' "${base}/luci" "${base}/packages" > "$REPO_FILE"
 
 exit 0

@@ -1,10 +1,12 @@
 #!/bin/sh
 
-mirror='https://mirrors.ustc.edu.cn/openwrt'
+openwrt_mirror='https://mirrors.ustc.edu.cn/openwrt'
+immortalwrt_mirror='https://mirrors.ustc.edu.cn/immortalwrt'
 
 for f in /etc/apk/repositories /etc/apk/repositories.d/*.list; do
     [ -f "$f" ] || continue
-    sed -i "s#https\?://downloads.openwrt.org#${mirror}#g" "$f"
+    sed -i "s#https\?://downloads.openwrt.org#${openwrt_mirror}#g" "$f"
+    sed -i "s#https\?://downloads.immortalwrt.org#${immortalwrt_mirror}#g" "$f"
 done
 
 exit 0
