@@ -179,11 +179,7 @@ jobs:
           set -euo pipefail
 
           required_exec=(
-            imagebuilder/files/usr/bin/zb
-            imagebuilder/files/usr/bin/cf
             imagebuilder/files/usr/bin/sb
-            imagebuilder/files/etc/init.d/owb-boot
-            imagebuilder/files/etc/uci-defaults/95-zb-base
           )
 
           : > diagnostics/overlay-checks.txt

@@ -5,43 +5,15 @@
 [![Upstream](https://img.shields.io/badge/upstream-OpenWrt-00b5e2)](https://github.com/openwrt/openwrt)
 [![Target](https://img.shields.io/badge/target-x86%2F64-generic)](https://openwrt.org/)
 
-Build polished OpenWrt x86_64 release images with the official ImageBuilder.
+基于官方 ImageBuilder 自动构建 OpenWrt x86_64 镜像，每次触发自动跟进最新上游版本。
 
-This repository automates a small, opinionated OpenWrt build pipeline for `x86/64` UEFI systems. It tracks the latest upstream release, applies local customizations, bundles optional packages, and publishes ready-to-use images through GitHub Actions.
+## 使用
 
-## Repository Layout
+进入 `Actions → build → Run workflow` 触发构建，无需手动输入。构建完成后镜像发布到 [Releases](https://github.com/KuGouGo/OpenWrt-Builder/releases)。
 
-```txt
-.github/workflows/build.yml
-config/build.conf
-config/packages.list
-files/
-packages/
-README.md
-```
+## 配置
 
-- `config/build.conf`: target, image, and download settings
-- `config/packages.list`: extra packages and explicit package replacements
-- `files/`: first-boot files and UCI defaults copied into the image
-- `packages/`: local `.apk` files injected into ImageBuilder before packaging
-- `.github/workflows/build.yml`: the end-to-end GitHub Actions workflow
-
-## What The Workflow Does
-
-1. Resolve the latest official OpenWrt release.
-2. Download the matching ImageBuilder.
-3. Fetch the latest upstream `sing-box` APK when `sing-box` is listed in `config/packages.list`.
-4. Copy the `files/` overlay and local packages into ImageBuilder.
-5. Build the `combined-efi.img.gz` image.
-6. Publish diagnostics, manifests, and release assets.
-
-## Running A Build
-
-Run `Actions -> build -> Run workflow` in GitHub.
-
-There are no manual workflow inputs. Build behavior is fully driven by `config/build.conf`, `config/packages.list`, `files/`, and `packages/`.
-
-## Build Configuration
+`config/build.conf` — 目标平台和镜像参数：
 
 ```conf
 OPENWRT_TARGET=x86
@@ -49,66 +21,27 @@ OPENWRT_SUBTARGET=64
 OPENWRT_PROFILE=generic
 OPENWRT_FS=squashfs
 OPENWRT_IMAGES="combined-efi.img.gz"
-ROOTFS_PARTSIZE=600
+ROOTFS_PARTSIZE=1024
 BUILD_BASE=https://downloads.openwrt.org
 PACKAGES_FILE=config/packages.list
 ```
 
-## Project Notes
+`config/packages.list` — 额外安装的包及需移除的默认包（`-` 前缀表示移除）。
 
-- Uses the official OpenWrt release ImageBuilder rather than a full source build
-- Produces the `combined-efi.img.gz` image for UEFI deployments
-- Preserves diagnostics even when the build fails
-- Enables `ADD_LOCAL_KEY=1` automatically when local packages are present
-- Keeps x86/64 generic profile defaults implicit in `config/packages.list`, including common NIC drivers
-- Replaces the default `uhttpd` stack with a preinstalled `nginx + uwsgi` stack for LuCI and zashboard
-- `files/etc/uci-defaults/97-system-cn`: sets timezone to `Asia/Shanghai` and switches to domestic NTP servers
-- `files/etc/uci-defaults/98-apk-mirror`: rewrites APK repositories to the USTC mirror
-- `files/etc/uci-defaults/95-zb-base`: enables and runs the recurring boot reconcile service on first boot
-- `files/etc/init.d/owb-boot`: reruns the boot-time reconcile logic on every startup and refreshes the DMI-based model label when needed
-- Local `.apk` files can be dropped directly into `packages/`
+`files/` — 覆盖到镜像的初始化文件和 UCI defaults，在首次启动时执行：
+- `97-system-cn`：时区设为 Asia/Shanghai，NTP 切换为国内服务器
+- `98-apk-mirror`：APK 源替换为 USTC 镜像
 
-## Zashboard Stack
+`packages/` — 本地 `.apk` 文件，构建时注入 ImageBuilder。
 
-This repository includes the web stack, DDNS, and ACME helpers needed for the current `zashboard.kugougou.store` layout:
+## 内置工具
 
-- `luci-nginx` is used as the default LuCI collection
-- `nginx` + `uwsgi` are installed by default
-- Cloudflare DDNS for both `A` and `AAAA`
-- ACME via `acme-acmesh` + Cloudflare DNS validation
+`/usr/bin/sb` — sing-box 管理助手，支持核心升级和配置更新。
 
-The repository does **not** store the live Cloudflare token.
-
-Conflict handling built into the image:
-
-- `uhttpd` and `uhttpd-mod-ubus` are explicitly excluded at build time
-- the LuCI collection itself is switched to `luci-nginx`, mirroring the same high-level approach used by `sbwml/r4s_build_script`
-- `zb` disables and stops `uhttpd` again on first boot if it is still present for any reason
-- the first-boot script writes the LuCI and zashboard nginx vhosts, keeps LuCI on the default LAN address `192.168.1.1`, also keeps a localhost listener on `127.0.0.1`, and opens zashboard `80/443` for both IPv4 and IPv6
-- `owb-boot` is a standard OpenWrt init script, so the nginx helper is re-run on every boot without depending on `rc.local`
-
-Expected effect after a fresh flash:
-
-1. `nginx` is the active web server instead of `uhttpd`
-2. `http://192.168.1.1/` and `https://192.168.1.1/` serve LuCI by default, and LuCI also remains reachable locally on `127.0.0.1`
-3. `zashboard.kugougou.store` vhost is created immediately and proxies to `127.0.0.1:21107`
-4. Before ACME is configured and the certificate is issued, the zashboard vhost will fall back to the local `_lan` certificate
-5. After you provide the Cloudflare token and issue the ACME certificate, the next reboot or a manual start of `/etc/init.d/owb-boot` will switch the vhost to the trusted domain certificate
-
-After flashing the image:
-
-1. Copy `/etc/openwrt-builder/cloudflare.env.example` to `/etc/openwrt-builder/cloudflare.env` on the router and fill in `CF_TOKEN` and `ACME_EMAIL`.
-2. Run `/usr/bin/cf`.
-3. Start or restart `ddns` and `acme`.
-4. After the first ACME issuance completes, either reboot once or run `/etc/init.d/owb-boot start` to switch the zashboard vhost to the issued certificate immediately.
-
-Validation notes for this repository version:
-
-- the build will include the required `nginx`, `uwsgi`, `ddns`, and `acme` packages directly from `config/packages.list`
-- the recurring boot reconcile is implemented in `files/etc/init.d/owb-boot`
-- the nginx handoff logic itself remains in `files/etc/uci-defaults/95-zb-base` and `/usr/bin/zb`
-- `/usr/bin/zb` is idempotent, so rerunning it should only reconcile the expected nginx and firewall state
-
-## Download
-
-<https://github.com/KuGouGo/OpenWrt-Builder/releases>
+```
+sb                        # 交互式菜单（终端模式）或自动更新（非终端）
+sb core --stable          # 仅更新核心到最新稳定版
+sb config --config-url URL  # 仅更新配置
+sb set-config-url URL     # 保存配置订阅地址
+sb set-channel beta       # 切换到 beta 通道
+```

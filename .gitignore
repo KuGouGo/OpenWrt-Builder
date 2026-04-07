@@ -7,3 +7,6 @@ imagebuilder/
 out/
 diagnostics/
 release-notes.txt
+
+packages/*.apk
+packages/*.ipk

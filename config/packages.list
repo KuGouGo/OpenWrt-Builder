@@ -9,19 +9,7 @@ libustream-openssl
 -libustream-mbedtls
 -uhttpd
 -uhttpd-mod-ubus
-
-# DDNS + ACME
-# Minimal DDNS runtime for Cloudflare is:
-#   ddns-scripts
-#   ddns-scripts-cloudflare
-#   ddns-scripts-services
-# LuCI management is provided separately below.
-acme-acmesh
-acme-acmesh-dnsapi
-acme-common
-ddns-scripts
-ddns-scripts-cloudflare
-ddns-scripts-services
+-wget
 
 # Base utilities
 bash
@@ -38,11 +26,9 @@ lsblk
 # LuCI and LuCI apps
 # Use luci-nginx as the default LuCI collection to match the nginx web stack.
 luci-nginx
-luci-app-ddns
 luci-app-firewall
 luci-app-package-manager
 luci-i18n-base-zh-cn
-luci-i18n-ddns-zh-cn
 luci-i18n-firewall-zh-cn
 luci-i18n-package-manager-zh-cn
 

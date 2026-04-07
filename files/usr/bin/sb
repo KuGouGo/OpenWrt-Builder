@@ -705,13 +705,6 @@ detect_arch() {
     printf '%s\n' "$arch"
 }
 
-resolve_version() {
-    release_json="$(resolve_release_json)"
-    latest_version="$(printf '%s\n' "$release_json" | jq -r '.tag_name' | sed 's/^v//')"
-    [ -n "$latest_version" ] && [ "$latest_version" != "null" ] || fail "failed to resolve sing-box version"
-    printf '%s\n' "$latest_version"
-}
-
 resolve_release_json() {
     if [ -n "$version" ]; then
         curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL \
