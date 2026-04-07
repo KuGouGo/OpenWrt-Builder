@@ -180,6 +180,7 @@ jobs:
 
           required_exec=(
             imagebuilder/files/usr/bin/sb
+            imagebuilder/files/etc/uci-defaults/99-apk-immortalwrt
           )
 
           : > diagnostics/overlay-checks.txt

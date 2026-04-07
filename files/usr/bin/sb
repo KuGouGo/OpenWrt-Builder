@@ -5,25 +5,26 @@ export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 trap '' HUP PIPE
 
 SINGBOX_BIN="/usr/bin/sing-box"
-INITD="/etc/init.d/sing-box"
+SINGBOX_SERVICE="sing-box"
+INITD="/etc/init.d/${SINGBOX_SERVICE}"
 CONFIG_DIR="/etc/sing-box"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
 SETTINGS_FILE="/etc/sb.conf"
 
-LOG_FILE="/tmp/sb.log"
-LOCK_DIR="/tmp/.sb.lock"
-LOCK_PID_FILE="${LOCK_DIR}/pid"
-TEMP_CONFIG="/tmp/sing-box-config.json.tmp"
-TEMP_PACKAGE=""
-TEMP_CONFIG_BACKUP=""
+RUN_DIR="/run/sb"
+LOCK_DIR="${RUN_DIR}/lock"
+LOG_DIR="/var/log/sb"
+LOG_FILE="${LOG_DIR}/sb.log"
+CONFIG_SNAPSHOT_DIR="${CONFIG_DIR}/snapshots"
+
+TMP_DIR=""
+TEMP_CONFIG=""
+CONFIG_ROLLBACK_FILE=""
 LOCK_ACQUIRED=0
 CONFIG_HAD_PREVIOUS=0
 
-action="all"
-version=""
+action=""
 config_url=""
-release_channel=""
-show_full_url=0
 core_changed=0
 config_changed=0
 config_rolled_back=0
@@ -35,7 +36,6 @@ C_RED=''
 C_GREEN=''
 C_YELLOW=''
 C_CYAN=''
-C_GREY=''
 
 setup_colors() {
     if [ -t 1 ] && [ "${TERM:-}" != "dumb" ]; then
@@ -46,92 +46,59 @@ setup_colors() {
         C_GREEN="$(printf '\033[32m')"
         C_YELLOW="$(printf '\033[33m')"
         C_CYAN="$(printf '\033[36m')"
-        C_GREY="$(printf '\033[90m')"
     fi
 }
 
-timestamp() {
-    date '+%Y-%m-%d %H:%M:%S'
+timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
+
+ensure_runtime_dirs() {
+    mkdir -p "$RUN_DIR" "$LOG_DIR" "$CONFIG_SNAPSHOT_DIR"
+    touch "$LOG_FILE"
+    chmod 640 "$LOG_FILE" 2>/dev/null || true
 }
 
 log() {
-    printf '[%s] %s\n' "$(timestamp)" "$*" | tee -a "$LOG_FILE"
+    if mkdir -p "$LOG_DIR" 2>/dev/null; then
+        printf '[%s] %s\n' "$(timestamp)" "$*" | tee -a "$LOG_FILE"
+    else
+        printf '[%s] %s\n' "$(timestamp)" "$*"
+    fi
 }
 
-info() {
-    log "INFO  $*"
-}
-
-warn() {
-    log "WARN  $*"
-}
-
+info() { log "INFO  $*"; }
+warn() { log "WARN  $*"; }
 fail() {
     log "ERROR $*"
+    print_recent_log || true
     exit 1
 }
 
-require_root() {
-    [ "$(id -u)" -eq 0 ] || fail "root is required"
-}
-
-ensure_root_for_settings() {
-    if [ "$(id -u)" -ne 0 ]; then
-        warn "root is required to change saved settings"
-        pause_line
-        return 1
-    fi
-    return 0
-}
-
 paint() {
-    color="$1"
+    local color="$1"
     shift
     printf '%s%s%s' "$color" "$*" "$C_RESET"
 }
 
 hr() {
-    printf '%s\n' '------------------------------------------------------------'
+    printf '%s%s%s\n' "$C_DIM" "--------------------------------------------------" "$C_RESET"
 }
 
 ui_title() {
     printf '\n'
     hr
-    printf '%s%s%s\n' "$C_BOLD" "$1" "$C_RESET"
+    printf '  %s%s%s\n' "${C_BOLD}${C_CYAN}" "$1" "$C_RESET"
     hr
 }
 
 ui_row() {
-    key="$1"
-    value="$2"
-    printf '  %-12s %s\n' "$key" "$value"
+    printf '  %-14s %s\n' "$1" "$2"
 }
 
 service_badge() {
     case "$1" in
-        running)
-            paint "$C_GREEN" "running"
-            ;;
-        stopped)
-            paint "$C_YELLOW" "stopped"
-            ;;
-        *)
-            printf '%s' "$1"
-            ;;
-    esac
-}
-
-channel_badge() {
-    case "$1" in
-        stable)
-            paint "$C_GREEN" "stable"
-            ;;
-        beta)
-            paint "$C_YELLOW" "beta"
-            ;;
-        *)
-            printf '%s' "$1"
-            ;;
+        running) paint "$C_GREEN" "运行中" ;;
+        stopped) paint "$C_YELLOW" "已停止" ;;
+        *) printf '%s' "$1" ;;
     esac
 }
 
@@ -139,163 +106,164 @@ config_badge() {
     if [ -n "$1" ]; then
         paint "$C_CYAN" "$(mask_value "$1")"
     else
-        paint "$C_RED" "unset"
+        paint "$C_RED" "未设置"
     fi
 }
 
-usage() {
-    cat <<'EOF'
-Usage:
-  sb
-  sb [all|core|config] [--version VERSION] [--config-url URL] [--stable|--beta]
-  sb set-config-url [URL]
-  sb show-config-url [--full]
-  sb set-channel [stable|beta]
-  sb show-channel
-
-Examples:
-  sb
-  sb core --stable
-  sb core --version 1.12.10
-  sb config --config-url https://example.com/config.json
-  sb set-config-url https://example.com/config.json
-  sb set-channel beta
-EOF
+change_badge() {
+    case "$1" in
+        yes) paint "$C_GREEN" "已更新" ;;
+        no) paint "$C_DIM" "无变化" ;;
+        rolled_back) paint "$C_YELLOW" "已回滚" ;;
+        *) printf '%s' "$1" ;;
+    esac
 }
 
 cleanup() {
     [ "$LOCK_ACQUIRED" -eq 1 ] && rm -rf "$LOCK_DIR" 2>/dev/null || true
-    rm -f "$TEMP_CONFIG" 2>/dev/null || true
-    [ -n "$TEMP_PACKAGE" ] && rm -f "$TEMP_PACKAGE" 2>/dev/null || true
-    [ -n "$TEMP_CONFIG_BACKUP" ] && rm -f "$TEMP_CONFIG_BACKUP" 2>/dev/null || true
+    [ -n "$TMP_DIR" ] && rm -rf "$TMP_DIR" 2>/dev/null || true
 }
 trap cleanup INT TERM EXIT
 
-is_interactive_terminal() {
-    [ -t 0 ] && [ -t 1 ]
+mktemp_dir() {
+    TMP_DIR="$(mktemp -d /tmp/sb.XXXXXX)"
+    TEMP_CONFIG="${TMP_DIR}/config.json"
 }
 
-read_setting() {
-    key="$1"
-    [ -f "$SETTINGS_FILE" ] || return 0
-    awk -F= -v target="$key" '
-        $1 == target {
-            sub(/^[^=]*=/, "", $0)
-            gsub(/\r$/, "", $0)
-            print $0
-            exit
-        }
-    ' "$SETTINGS_FILE"
+acquire_lock() {
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+        printf '%s\n' "$$" > "${LOCK_DIR}/pid"
+        LOCK_ACQUIRED=1
+        return 0
+    fi
+
+    local existing_pid
+    existing_pid="$(sed -n '1p' "${LOCK_DIR}/pid" 2>/dev/null || true)"
+    if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+        fail "Another sb task is already running (pid: $existing_pid)"
+    fi
+
+    warn "Stale lock found, removing it."
+    rm -rf "$LOCK_DIR"
+    mkdir "$LOCK_DIR"
+    printf '%s\n' "$$" > "${LOCK_DIR}/pid"
+    LOCK_ACQUIRED=1
 }
 
-saved_config_url() {
-    read_setting CONFIG_URL
+require_root() {
+    [ "$(id -u)" -eq 0 ] || fail "root is required for this action"
 }
 
-saved_release_channel() {
-    saved_channel="$(read_setting RELEASE_CHANNEL)"
-    if [ -n "$saved_channel" ]; then
-        printf '%s\n' "$saved_channel"
-    else
-        printf 'stable\n'
+ensure_root_for_settings() {
+    if [ "$(id -u)" -ne 0 ]; then
+        warn "Root is required to change saved settings."
+        pause_line
+        return 1
+    fi
+    return 0
+}
+
+is_interactive_terminal() { [ -t 0 ] && [ -t 1 ]; }
+
+prompt_line() {
+    printf '%s' "$1" >&2
+    local reply
+    IFS= read -r reply || true
+    printf '%s\n' "$reply"
+}
+
+confirm_yes() {
+    local answer
+    answer="$(prompt_line "$1 [Y/n]: ")"
+    [ -z "$answer" ] && answer="y"
+    case "$answer" in
+        y|Y|yes|YES) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+pause_line() {
+    if is_interactive_terminal; then
+        printf '\n'
+        prompt_line "  ${C_DIM}Press Enter to continue...${C_RESET}" >/dev/null
     fi
 }
 
+print_recent_log() {
+    if command -v logread >/dev/null 2>&1; then
+        logread 2>/dev/null | grep -i 'sing.box\|sing-box' | tail -n 20 \
+            | tee -a "$LOG_FILE" >/dev/null || true
+    fi
+}
+
+read_setting() {
+    local key="$1"
+    [ -f "$SETTINGS_FILE" ] || return 0
+    awk -F= -v k="$key" '$1==k{sub(/^[^=]*=/,"",$0);gsub(/\r$/,"",$0);print $0;exit}' \
+        "$SETTINGS_FILE"
+}
+
+saved_config_url() { read_setting CONFIG_URL; }
+
 write_settings() {
-    settings_config_url="$1"
-    settings_release_channel="$2"
-    mkdir -p /etc
-    umask 077
+    local settings_config_url="$1"
     : > "$SETTINGS_FILE"
-    [ -n "$settings_config_url" ] && printf 'CONFIG_URL=%s\n' "$settings_config_url" >> "$SETTINGS_FILE"
-    printf 'RELEASE_CHANNEL=%s\n' "$settings_release_channel" >> "$SETTINGS_FILE"
+    chmod 600 "$SETTINGS_FILE" 2>/dev/null || true
+    if [ -n "$settings_config_url" ]; then
+        printf 'CONFIG_URL=%s\n' "$settings_config_url" >> "$SETTINGS_FILE"
+    fi
 }
 
 mask_value() {
-    value="$1"
-    printf '%s\n' "$value" | awk '
-        {
-            len = length($0)
-            if (len <= 20) {
-                print $0
-            } else {
-                print substr($0, 1, 12) "..." substr($0, len - 7, 8)
-            }
-        }
-    '
+    printf '%s\n' "$1" | awk '{
+        len = length($0)
+        if (len <= 20) print $0
+        else print substr($0, 1, 12) "..." substr($0, len - 7, 8)
+    }'
 }
 
 is_valid_config_url() {
     case "$1" in
-        http://*|https://*)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
+        http://*|https://*) return 0 ;;
+        *) return 1 ;;
     esac
 }
 
 validate_config_url() {
-    is_valid_config_url "$1" || fail "config url must start with http:// or https://"
-}
-
-is_valid_release_channel() {
-    case "$1" in
-        stable|beta)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-validate_release_channel() {
-    is_valid_release_channel "$1" || fail "release channel must be stable or beta"
+    is_valid_config_url "$1" || fail "Config URL must start with http:// or https://"
 }
 
 save_config_url() {
-    [ $# -gt 0 ] || fail "missing config url"
+    [ $# -gt 0 ] || fail "Missing config URL"
     validate_config_url "$1"
     config_url="$1"
-    release_channel="$(saved_release_channel)"
-    validate_release_channel "$release_channel"
-    write_settings "$config_url" "$release_channel"
-    info "config url saved to $SETTINGS_FILE"
+    write_settings "$config_url"
+    info "Config URL saved."
 }
 
-save_release_channel() {
-    [ $# -gt 0 ] || fail "missing release channel"
-    validate_release_channel "$1"
-    release_channel="$1"
-    config_url="$(saved_config_url)"
-    write_settings "$config_url" "$release_channel"
-    info "release channel saved to $SETTINGS_FILE"
-}
-
-show_config_url() {
-    config_url="$(saved_config_url)"
-    [ -n "$config_url" ] || fail "config url is not set"
-    if [ "$show_full_url" -eq 1 ]; then
-        printf '%s\n' "$config_url"
-    else
-        mask_value "$config_url"
-    fi
-}
-
-show_release_channel() {
-    release_channel="$(saved_release_channel)"
-    validate_release_channel "$release_channel"
-    printf '%s\n' "$release_channel"
+check_deps() {
+    command -v curl >/dev/null 2>&1 || fail "curl is required"
+    command -v awk >/dev/null 2>&1 || fail "awk is required"
+    command -v jq >/dev/null 2>&1 || fail "jq is required"
+    command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
+    command -v apk >/dev/null 2>&1 || fail "apk is required"
+    [ -x "$SINGBOX_BIN" ] || fail "sing-box is not installed: $SINGBOX_BIN"
+    [ -x "$INITD" ] || fail "init script not found: $INITD"
 }
 
 current_core_version() {
     if [ -x "$SINGBOX_BIN" ]; then
-        "$SINGBOX_BIN" version 2>/dev/null | awk 'NR==1 { print $3; exit }'
+        "$SINGBOX_BIN" version 2>/dev/null | awk 'NR==1{print $3;exit}'
     else
         printf 'not-installed\n'
     fi
+}
+
+service_running() {
+    if [ ! -x "$INITD" ]; then
+        return 1
+    fi
+    "$INITD" running >/dev/null 2>&1
 }
 
 service_status() {
@@ -306,203 +274,262 @@ service_status() {
     fi
 }
 
-service_running() {
-    pidof sing-box >/dev/null 2>&1
-}
-
-acquire_lock() {
-    if mkdir "$LOCK_DIR" 2>/dev/null; then
-        printf '%s\n' "$$" > "$LOCK_PID_FILE"
-        LOCK_ACQUIRED=1
-        return 0
-    fi
-
-    existing_pid=""
-    if [ -f "$LOCK_PID_FILE" ]; then
-        existing_pid="$(sed -n '1p' "$LOCK_PID_FILE" 2>/dev/null || true)"
-    fi
-
-    if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
-        fail "another update task is already running (pid: $existing_pid)"
-    fi
-
-    warn "stale lock found, cleaning it"
-    rm -rf "$LOCK_DIR" 2>/dev/null || fail "failed to remove stale lock"
-    mkdir "$LOCK_DIR" 2>/dev/null || fail "failed to acquire lock"
-    printf '%s\n' "$$" > "$LOCK_PID_FILE"
-    LOCK_ACQUIRED=1
-}
-
-check_deps() {
-    command -v curl >/dev/null 2>&1 || fail "curl is required"
-    command -v apk >/dev/null 2>&1 || fail "apk is required"
-    command -v awk >/dev/null 2>&1 || fail "awk is required"
-    command -v jq >/dev/null 2>&1 || fail "jq is required"
-    command -v md5sum >/dev/null 2>&1 || fail "md5sum is required"
-    command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
-    [ -x "$SINGBOX_BIN" ] || fail "sing-box is not installed: $SINGBOX_BIN"
-}
-
-prompt_line() {
-    prompt="$1"
-    printf '%s' "$prompt" >&2
-    IFS= read -r reply || true
-    printf '%s\n' "$reply"
-}
-
-prompt_with_default() {
-    label="$1"
-    default_value="$2"
-    if [ -n "$default_value" ]; then
-        prompt="${label} [${default_value}]: "
-    else
-        prompt="${label}: "
-    fi
-    reply="$(prompt_line "$prompt")"
-    if [ -n "$reply" ]; then
-        printf '%s\n' "$reply"
-    else
-        printf '%s\n' "$default_value"
-    fi
-}
-
-confirm_yes() {
-    prompt="$1"
-    default_answer="${2:-y}"
-
-    case "$default_answer" in
-        y|Y)
-            answer="$(prompt_line "${prompt} [Y/n]: ")"
-            [ -n "$answer" ] || answer="y"
-            ;;
-        *)
-            answer="$(prompt_line "${prompt} [y/N]: ")"
-            [ -n "$answer" ] || answer="n"
-            ;;
-    esac
-
-    case "$answer" in
-        y|Y|yes|YES)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-pause_line() {
-    if is_interactive_terminal; then
-        prompt_line 'Press Enter to continue...' >/dev/null
-    fi
-}
-
-prepare_config_url_interactive() {
+resolve_config_url() {
     if [ -n "$config_url" ]; then
+        validate_config_url "$config_url"
+        printf '%s\n' "$config_url"
         return 0
     fi
 
     config_url="$(saved_config_url)"
-    if [ -n "$config_url" ]; then
+    [ -n "$config_url" ] || fail "Config URL is not set. Run: sb set-url <url>"
+    validate_config_url "$config_url"
+    printf '%s\n' "$config_url"
+}
+
+hash_file() {
+    sha256sum "$1" | awk '{print $1}'
+}
+
+backup_current_config() {
+    CONFIG_ROLLBACK_FILE=""
+    CONFIG_HAD_PREVIOUS=0
+    if [ -f "$CONFIG_FILE" ]; then
+        CONFIG_ROLLBACK_FILE="${TMP_DIR}/config.rollback.json"
+        cp -f "$CONFIG_FILE" "$CONFIG_ROLLBACK_FILE"
+        chmod 600 "$CONFIG_ROLLBACK_FILE" 2>/dev/null || true
+        CONFIG_HAD_PREVIOUS=1
+    fi
+}
+
+persist_config_snapshot() {
+    if [ "$config_changed" -ne 1 ] || [ ! -f "$CONFIG_FILE" ]; then
         return 0
     fi
 
-    warn "config url is not set"
-    temp_url="$(prompt_line 'Enter a temporary config url, or leave empty to cancel: ')"
+    local short_hash snapshot_path
+    short_hash="$(hash_file "$CONFIG_FILE" | cut -c1-12)"
+    snapshot_path="${CONFIG_SNAPSHOT_DIR}/config-$(date +%Y%m%d-%H%M%S)-${short_hash}.json"
+    cp -f "$CONFIG_FILE" "$snapshot_path"
+    chmod 600 "$snapshot_path" 2>/dev/null || true
+
+    local old_snapshots
+    old_snapshots="$(ls -1t "${CONFIG_SNAPSHOT_DIR}"/config-*.json 2>/dev/null | sed -n '11,$p')"
+    if [ -n "$old_snapshots" ]; then
+        printf '%s\n' "$old_snapshots" | xargs rm -f
+    fi
+}
+
+detect_arch() {
+    local arch=""
+    if [ -f /etc/os-release ]; then
+        # shellcheck source=/etc/os-release
+        . /etc/os-release
+        arch="${OPENWRT_ARCH:-}"
+    fi
+    if [ -z "$arch" ]; then
+        arch="$(apk --print-arch 2>/dev/null || true)"
+    fi
+    [ -n "$arch" ] || fail "Could not detect OpenWrt architecture"
+    printf '%s\n' "$arch"
+}
+
+update_core() {
+    local arch current_version release_json latest_tag latest_version
+    local pkg_file pkg_url expected_digest actual_sha256 pkg_path
+
+    arch="$(detect_arch)"
+    current_version="$(current_core_version)"
+
+    info "Querying latest sing-box release from GitHub..."
+    release_json="$(curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 \
+        -fsSL "https://api.github.com/repos/SagerNet/sing-box/releases/latest")" \
+        || fail "Failed to query GitHub API"
+
+    latest_tag="$(printf '%s\n' "$release_json" | jq -r '.tag_name')"
+    [ -n "$latest_tag" ] && [ "$latest_tag" != "null" ] \
+        || fail "Failed to parse latest sing-box release tag"
+    latest_version="${latest_tag#v}"
+
+    if [ "$current_version" = "$latest_version" ]; then
+        info "Core is already up to date (${current_version})."
+        return 0
+    fi
+
+    pkg_file="sing-box_${latest_version}_openwrt_${arch}.apk"
+    pkg_url="https://github.com/SagerNet/sing-box/releases/download/${latest_tag}/${pkg_file}"
+
+    expected_digest="$(printf '%s\n' "$release_json" \
+        | jq -r --arg f "$pkg_file" '.assets[] | select(.name == $f) | .digest' \
+        | head -n 1)"
+    [ -n "$expected_digest" ] && [ "$expected_digest" != "null" ] \
+        || fail "Could not find asset digest for ${pkg_file}"
+    expected_digest="${expected_digest#sha256:}"
+
+    info "Updating: ${current_version} → ${latest_version}"
+    pkg_path="${TMP_DIR}/${pkg_file}"
+    curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 300 \
+        -fL "$pkg_url" -o "$pkg_path" || fail "Failed to download ${pkg_file}"
+
+    actual_sha256="$(hash_file "$pkg_path")"
+    [ "$actual_sha256" = "$expected_digest" ] || fail "Digest mismatch for ${pkg_file}"
+
+    info "Installing ${pkg_file}..."
+    apk add --no-progress --allow-untrusted "$pkg_path" || fail "Failed to install sing-box"
+
+    core_changed=1
+    info "Core updated to ${latest_version}."
+}
+
+update_config() {
+    local resolved_url local_hash remote_hash check_output
+
+    resolved_url="$(resolve_config_url)"
+    info "Downloading configuration..."
+    curl --retry 3 --retry-delay 2 --retry-all-errors \
+        --connect-timeout 15 --max-time 60 \
+        -fsSL "$resolved_url" -o "$TEMP_CONFIG" || fail "Failed to download config"
+
+    [ -s "$TEMP_CONFIG" ] || fail "Downloaded config is empty"
+
+    check_output="$("$SINGBOX_BIN" check -c "$TEMP_CONFIG" 2>&1)" \
+        || fail "Config validation failed: $check_output"
+
+    local_hash=""
+    [ -f "$CONFIG_FILE" ] && local_hash="$(hash_file "$CONFIG_FILE")"
+    remote_hash="$(hash_file "$TEMP_CONFIG")"
+
+    if [ "$local_hash" = "$remote_hash" ]; then
+        info "Config is unchanged."
+        return 0
+    fi
+
+    mkdir -p "$CONFIG_DIR"
+    backup_current_config
+    cp -f "$TEMP_CONFIG" "$CONFIG_FILE"
+    chmod 644 "$CONFIG_FILE"
+    config_changed=1
+    info "Config updated."
+}
+
+rollback_config_update() {
+    if [ "$CONFIG_HAD_PREVIOUS" -eq 1 ] && [ -n "$CONFIG_ROLLBACK_FILE" ] \
+       && [ -f "$CONFIG_ROLLBACK_FILE" ]; then
+        warn "Service restart failed. Restoring previous config..."
+        cp -f "$CONFIG_ROLLBACK_FILE" "$CONFIG_FILE" || fail "Failed to restore config"
+        chmod 644 "$CONFIG_FILE"
+        config_changed=0
+        config_rolled_back=1
+        return 0
+    fi
+
+    warn "No previous config backup. Removing broken config..."
+    rm -f "$CONFIG_FILE" 2>/dev/null || true
+    return 1
+}
+
+wait_for_service() {
+    local attempt max_attempts
+    max_attempts="${1:-15}"
+    attempt=1
+    while [ "$attempt" -le "$max_attempts" ]; do
+        service_running && return 0
+        sleep 1
+        attempt=$((attempt + 1))
+    done
+    return 1
+}
+
+restart_service() {
+    info "Restarting ${SINGBOX_SERVICE} service..."
+
+    if "$INITD" restart && wait_for_service 15; then
+        info "Service is running."
+        return 0
+    fi
+
+    print_recent_log || true
+
+    if [ "$config_changed" -eq 1 ]; then
+        if rollback_config_update; then
+            warn "Retrying with the previous config..."
+            "$INITD" restart || fail "Failed to restart after restoring previous config"
+            wait_for_service 15 || fail "Service did not recover after rollback"
+            warn "New config was rolled back because the service failed to restart."
+            return 0
+        fi
+        fail "Failed to restart sing-box and no rollback was available."
+    fi
+
+    fail "Failed to restart ${SINGBOX_SERVICE}."
+}
+
+show_state_panel() {
+    clear
+    ui_title "Sing-Box 管理面板"
+    ui_row "核心版本" "$(current_core_version)"
+    ui_row "服务状态" "$(service_badge "$(service_status)")"
+    ui_row "订阅地址" "$(config_badge "$(saved_config_url)")"
+    hr
+}
+
+show_result_panel() {
+    local core_state config_state
+
+    core_state="no"
+    config_state="no"
+    [ "$core_changed" -eq 1 ] && core_state="yes"
+    if [ "$config_rolled_back" -eq 1 ]; then
+        config_state="rolled_back"
+    elif [ "$config_changed" -eq 1 ]; then
+        config_state="yes"
+    fi
+
+    ui_title "任务完成"
+    ui_row "核心版本" "$(current_core_version)"
+    ui_row "服务状态" "$(service_badge "$(service_status)")"
+    ui_row "核心更新" "$(change_badge "$core_state")"
+    ui_row "配置更新" "$(change_badge "$config_state")"
+    hr
+}
+
+prepare_config_url_interactive() {
+    [ -n "$config_url" ] && return 0
+
+    config_url="$(saved_config_url)"
+    [ -n "$config_url" ] && return 0
+
+    printf '\n'
+    warn "尚未设置订阅地址。"
+    local temp_url
+    temp_url="$(prompt_line "  请输入订阅地址: ")"
     if [ -z "$temp_url" ]; then
-        warn "config update cancelled"
+        warn "已取消。"
         pause_line
         return 1
     fi
-
     if ! is_valid_config_url "$temp_url"; then
-        warn "invalid config url"
+        warn "地址格式不正确，需以 http:// 或 https:// 开头。"
         pause_line
         return 1
     fi
 
     config_url="$temp_url"
-    if confirm_yes "Save this url to ${SETTINGS_FILE}?" "n"; then
+    if confirm_yes "  是否保存为默认订阅地址？"; then
         ensure_root_for_settings || return 0
         save_config_url "$config_url"
     fi
     return 0
 }
 
-show_state_panel() {
-    menu_config_url="$(saved_config_url)"
-    menu_release_channel="$(saved_release_channel)"
-
-    ui_title "sb | sing-box helper"
-    ui_row "Core" "$(current_core_version)"
-    ui_row "Service" "$(service_badge "$(service_status)")"
-    ui_row "Channel" "$(channel_badge "$menu_release_channel")"
-    ui_row "Config" "$(config_badge "$menu_config_url")"
-    ui_row "Log" "$LOG_FILE"
-}
-
-show_plan_panel() {
-    ui_title "Planned action"
-    ui_row "Action" "$action"
-    case "$action" in
-        all|core)
-            if [ -n "$version" ]; then
-                ui_row "Version" "$version"
-            else
-                ui_row "Version" "latest from ${release_channel}"
-            fi
-            ui_row "Channel" "$(channel_badge "$release_channel")"
-            ;;
-    esac
-    case "$action" in
-        all|config)
-            ui_row "Config" "$(config_badge "$config_url")"
-            ;;
-    esac
-}
-
-change_badge() {
-    case "$1" in
-        yes)
-            paint "$C_GREEN" "updated"
-            ;;
-        no)
-            paint "$C_DIM" "unchanged"
-            ;;
-        rolled_back)
-            paint "$C_YELLOW" "rolled back"
-            ;;
-        *)
-            printf '%s' "$1"
-            ;;
-    esac
-}
-
-show_result_panel() {
-    result_config_url="$config_url"
-    [ -n "$result_config_url" ] || result_config_url="$(saved_config_url)"
-    result_channel="$(saved_release_channel)"
-
-    ui_title "Completed"
-    ui_row "Action" "$action"
-    ui_row "Core" "$(current_core_version)"
-    ui_row "Service" "$(service_badge "$(service_status)")"
-    ui_row "Channel" "$(channel_badge "$result_channel")"
-    ui_row "Config" "$(config_badge "$result_config_url")"
-    ui_row "Core diff" "$(change_badge "$1")"
-    ui_row "Config diff" "$(change_badge "$2")"
-}
-
 interactive_set_url() {
     ensure_root_for_settings || return 0
-    temp_url="$(prompt_line 'New config url, empty to cancel: ')"
-    if [ -z "$temp_url" ]; then
-        warn "url not changed"
-        pause_line
-        return 0
-    fi
+    printf '\n'
+    local temp_url
+    temp_url="$(prompt_line "  请输入新的订阅地址（留空取消）: ")"
+    [ -z "$temp_url" ] && return 0
     if ! is_valid_config_url "$temp_url"; then
-        warn "config url must start with http:// or https://"
+        warn "地址必须以 http:// 或 https:// 开头。"
         pause_line
         return 0
     fi
@@ -511,116 +538,99 @@ interactive_set_url() {
 }
 
 interactive_show_url() {
-    menu_config_url="$(saved_config_url)"
-    if [ -z "$menu_config_url" ]; then
-        warn "config url is not set"
+    local current_url
+    current_url="$(saved_config_url)"
+    if [ -z "$current_url" ]; then
+        printf '\n'
+        warn "尚未设置订阅地址。"
         pause_line
         return 0
     fi
-
-    ui_title "Config url"
-    ui_row "Masked" "$(mask_value "$menu_config_url")"
-    if confirm_yes "Show full url?" "n"; then
-        ui_row "Full" "$menu_config_url"
+    ui_title "当前订阅地址"
+    ui_row "脱敏" "$(mask_value "$current_url")"
+    if confirm_yes "  是否显示完整地址？"; then
+        ui_row "完整" "$current_url"
     fi
     pause_line
-}
-
-interactive_set_channel() {
-    ensure_root_for_settings || return 0
-    current_channel="$(saved_release_channel)"
-    temp_channel="$(prompt_with_default 'Release channel (stable/beta)' "$current_channel")"
-    if ! is_valid_release_channel "$temp_channel"; then
-        warn "release channel must be stable or beta"
-        pause_line
-        return 0
-    fi
-    save_release_channel "$temp_channel"
-    pause_line
-}
-
-prepare_interactive_core_settings() {
-    version="$(prompt_with_default 'Version (empty = latest)' '')"
-    release_channel="$(prompt_with_default 'Release channel' "$release_channel")"
-    if ! is_valid_release_channel "$release_channel"; then
-        warn "release channel must be stable or beta"
-        pause_line
-        return 1
-    fi
-    return 0
 }
 
 interactive_menu() {
     while true; do
-        menu_release_channel="$(saved_release_channel)"
-        release_channel="$menu_release_channel"
         config_url=""
-        version=""
-
         show_state_panel
-        printf '\n'
-        printf '  1. Update core and config\n'
-        printf '  2. Update core only\n'
-        printf '  3. Update config only\n'
-        printf '  4. Set config url\n'
-        printf '  5. Show config url\n'
-        printf '  6. Change release channel\n'
-        printf '  0. Exit\n'
-        printf '\n'
 
-        choice="$(prompt_with_default 'Select action' '1')"
+        printf "  %s更新操作%s\n" "$C_BOLD" "$C_RESET"
+        printf "  ${C_CYAN}[ 1 ]${C_RESET} 更新订阅配置\n"
+        printf "  ${C_CYAN}[ 2 ]${C_RESET} 更新内核程序\n"
+        printf "  ${C_CYAN}[ 3 ]${C_RESET} 同时更新内核和配置\n"
+        printf "  ${C_DIM}------------------------------------------${C_RESET}\n"
+        printf "  %s管理操作%s\n" "$C_BOLD" "$C_RESET"
+        printf "  ${C_CYAN}[ 4 ]${C_RESET} 设置订阅地址\n"
+        printf "  ${C_CYAN}[ 5 ]${C_RESET} 查看订阅地址\n"
+        printf "  ${C_CYAN}[ 6 ]${C_RESET} 查看当前状态\n"
+        printf "  ${C_RED}[ 0 ]${C_RESET} 退出\n\n"
 
-        case "$choice" in
-            1|all)
-                action="all"
-                prepare_interactive_core_settings || continue
-                prepare_config_url_interactive || continue
-                show_plan_panel
-                if confirm_yes "Run now?" "y"; then
-                    break
-                fi
-                ;;
-            2|core)
-                action="core"
-                prepare_interactive_core_settings || continue
-                show_plan_panel
-                if confirm_yes "Run now?" "y"; then
-                    break
-                fi
-                ;;
-            3|config)
-                action="config"
-                temp_url="$(prompt_with_default 'Config url (empty = saved)' '')"
-                [ -n "$temp_url" ] && config_url="$temp_url"
-                if [ -n "$config_url" ] && ! is_valid_config_url "$config_url"; then
-                    warn "config url must start with http:// or https://"
-                    pause_line
-                    continue
-                fi
-                prepare_config_url_interactive || continue
-                show_plan_panel
-                if confirm_yes "Run now?" "y"; then
-                    break
-                fi
-                ;;
-            4|set-url)
-                interactive_set_url
-                ;;
-            5|show-url)
-                interactive_show_url
-                ;;
-            6|channel)
-                interactive_set_channel
-                ;;
-            0|exit|quit)
-                exit 0
-                ;;
-            *)
-                warn "invalid choice: $choice"
-                pause_line
-                ;;
+        case "$(prompt_line "  请选择操作 [0-6]: ")" in
+            1) action="config"; prepare_config_url_interactive || continue; break ;;
+            2) action="core"; break ;;
+            3) action="all"; prepare_config_url_interactive || continue; break ;;
+            4) interactive_set_url ;;
+            5) interactive_show_url ;;
+            6) show_status; pause_line ;;
+            0|exit|quit) clear; exit 0 ;;
+            *) warn "无效选项，请重新输入。"; sleep 1 ;;
         esac
     done
+}
+
+show_status() {
+    ui_title "当前状态"
+    ui_row "核心版本" "$(current_core_version)"
+    ui_row "服务状态" "$(service_badge "$(service_status)")"
+    ui_row "订阅地址" "$(config_badge "$(saved_config_url)")"
+    ui_row "配置文件" "$CONFIG_FILE"
+    ui_row "日志文件" "$LOG_FILE"
+    ui_row "快照目录" "$CONFIG_SNAPSHOT_DIR"
+    hr
+}
+
+show_url_cli() {
+    local current_url
+    current_url="$(saved_config_url)"
+    if [ -z "$current_url" ]; then
+        printf '未设置\n'
+    else
+        printf '%s\n' "$current_url"
+    fi
+}
+
+show_help() {
+    cat <<'EOF'
+用法：
+  sb
+    在终端中打开交互菜单。
+
+  sb all [url]
+    同时更新 sing-box 内核和订阅配置。
+
+  sb core
+    仅从 GitHub 最新 Release 更新内核。
+
+  sb config [url]
+    仅更新订阅配置。
+
+  sb status
+    查看当前状态。
+
+  sb show-url
+    显示已保存的订阅地址。
+
+  sb set-url <url>
+    保存订阅地址。
+
+  sb help
+    显示帮助。
+EOF
 }
 
 parse_args() {
@@ -633,228 +643,64 @@ parse_args() {
         return 0
     fi
 
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            all|core|config|show-config-url|show-channel|interactive)
-                action="$1"
-                shift
-                ;;
-            set-config-url)
-                action="$1"
-                shift
-                if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then
-                    config_url="$1"
-                    shift
-                fi
-                ;;
-            set-channel)
-                action="$1"
-                shift
-                if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then
-                    release_channel="$1"
-                    shift
-                fi
-                ;;
-            --version)
-                shift
-                [ $# -gt 0 ] || fail "missing version value"
-                version="$1"
-                shift
-                ;;
-            --stable)
-                release_channel="stable"
-                shift
-                ;;
-            --beta)
-                release_channel="beta"
-                shift
-                ;;
-            --config-url)
-                shift
-                [ $# -gt 0 ] || fail "missing config url"
+    action="$1"
+    shift || true
+
+    case "$action" in
+        all|config)
+            if [ $# -gt 0 ]; then
                 config_url="$1"
-                shift
-                ;;
-            --full)
-                show_full_url=1
-                shift
-                ;;
-            -h|--help)
-                usage
-                exit 0
-                ;;
-            *)
-                usage >&2
-                fail "unknown argument: $1"
-                ;;
-        esac
-    done
+                shift || true
+            fi
+            ;;
+        set-url)
+            [ $# -gt 0 ] || fail "Usage: sb set-url <url>"
+            config_url="$1"
+            shift || true
+            ;;
+        core|interactive|status|show-url|help) ;;
+        *) fail "Unknown action: $action" ;;
+    esac
+
+    [ $# -eq 0 ] || fail "Too many arguments"
 }
 
-detect_arch() {
-    arch=""
-    if [ -f /etc/os-release ]; then
-        # shellcheck source=/etc/os-release
-        . /etc/os-release
-        arch="${OPENWRT_ARCH:-}"
-    fi
-    if [ -z "$arch" ]; then
-        arch="$(apk --print-arch 2>/dev/null || true)"
-    fi
-    [ -n "$arch" ] || fail "failed to detect OpenWrt architecture"
-    printf '%s\n' "$arch"
-}
+run_mutating_action() {
+    require_root
+    ensure_runtime_dirs
+    mktemp_dir
+    acquire_lock
+    check_deps
 
-resolve_release_json() {
-    if [ -n "$version" ]; then
-        curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL \
-            "https://api.github.com/repos/SagerNet/sing-box/releases/tags/v${version}"
-        return 0
-    fi
+    case "$action" in
+        all|config) resolve_config_url >/dev/null ;;
+    esac
 
-    [ -n "$release_channel" ] || release_channel="$(saved_release_channel)"
-    validate_release_channel "$release_channel"
+    : > "$LOG_FILE"
+    hr
+    info "Task starting: $action"
+    hr
 
-    if [ "$release_channel" = "stable" ]; then
-        curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL \
-            "https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+    case "$action" in
+        all)    update_core; update_config ;;
+        core)   update_core ;;
+        config) update_config ;;
+    esac
+
+    if [ "$core_changed" -eq 1 ] || [ "$config_changed" -eq 1 ]; then
+        restart_service
+    elif ! service_running; then
+        warn "sing-box is not running, trying to start it..."
+        restart_service
     else
-        curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL \
-            "https://api.github.com/repos/SagerNet/sing-box/releases" |
-            jq -c 'map(select(.prerelease == true))[0]'
-    fi
-}
-
-resolve_config_url() {
-    if [ -n "$config_url" ]; then
-        validate_config_url "$config_url"
-        printf '%s\n' "$config_url"
-        return 0
+        info "No restart needed."
     fi
 
-    config_url="$(saved_config_url)"
-    [ -n "$config_url" ] || fail "config url is not set, run: sb set-config-url <url>"
-    validate_config_url "$config_url"
-    printf '%s\n' "$config_url"
-}
+    persist_config_snapshot
 
-update_core() {
-    arch="$(detect_arch)"
-    release_json="$(resolve_release_json)"
-    release_tag="$(printf '%s\n' "$release_json" | jq -r '.tag_name')"
-    [ -n "$release_tag" ] && [ "$release_tag" != "null" ] || fail "failed to resolve sing-box release tag"
-    resolved_version="${release_tag#v}"
-    file="sing-box_${resolved_version}_openwrt_${arch}.apk"
-    url="https://github.com/SagerNet/sing-box/releases/download/${release_tag}/${file}"
-    current_version="$(current_core_version)"
-
-    if [ "$current_version" = "$resolved_version" ]; then
-        info "core unchanged"
-        return 0
+    if is_interactive_terminal; then
+        show_result_panel
     fi
-
-    expected_sha256="$(printf '%s\n' "$release_json" | jq -r --arg file "$file" '.assets[] | select(.name == $file) | .digest' | head -n 1)"
-    [ -n "$expected_sha256" ] && [ "$expected_sha256" != "null" ] || fail "failed to resolve digest for $file"
-    expected_sha256="${expected_sha256#sha256:}"
-
-    TEMP_PACKAGE="/tmp/${file}"
-
-    info "downloading $url"
-    curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 300 -fL "$url" -o "$TEMP_PACKAGE"
-
-    actual_sha256="$(sha256sum "$TEMP_PACKAGE" | awk '{print $1}')"
-    [ "$actual_sha256" = "$expected_sha256" ] || fail "download digest mismatch for $file"
-
-    info "installing $file"
-    apk add --allow-untrusted "$TEMP_PACKAGE"
-    core_changed=1
-    info "sing-box core updated to ${resolved_version}"
-}
-
-backup_current_config() {
-    TEMP_CONFIG_BACKUP=""
-    CONFIG_HAD_PREVIOUS=0
-
-    if [ -f "$CONFIG_FILE" ]; then
-        TEMP_CONFIG_BACKUP="/tmp/sing-box-config.json.bak.$$"
-        cp -f "$CONFIG_FILE" "$TEMP_CONFIG_BACKUP" || fail "failed to back up existing config"
-        chmod 0600 "$TEMP_CONFIG_BACKUP" 2>/dev/null || true
-        CONFIG_HAD_PREVIOUS=1
-    fi
-}
-
-update_config() {
-    resolved_config_url="$(resolve_config_url)"
-    info "downloading config"
-    curl --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 -fsSL "$resolved_config_url" -o "$TEMP_CONFIG" || fail "failed to download config"
-
-    check_output="$("$SINGBOX_BIN" check -c "$TEMP_CONFIG" 2>&1)" || fail "config validation failed: $check_output"
-
-    local_md5=""
-    [ -f "$CONFIG_FILE" ] && local_md5="$(md5sum "$CONFIG_FILE" | awk '{print $1}')"
-    remote_md5="$(md5sum "$TEMP_CONFIG" | awk '{print $1}')"
-
-    if [ "$local_md5" = "$remote_md5" ]; then
-        info "config unchanged"
-        rm -f "$TEMP_CONFIG"
-        return 0
-    fi
-
-    mkdir -p "$CONFIG_DIR"
-    backup_current_config
-    mv -f "$TEMP_CONFIG" "$CONFIG_FILE"
-    chmod 0644 "$CONFIG_FILE"
-    config_changed=1
-    info "config updated"
-}
-
-rollback_config_update() {
-    if [ "$CONFIG_HAD_PREVIOUS" -eq 1 ] && [ -n "$TEMP_CONFIG_BACKUP" ] && [ -f "$TEMP_CONFIG_BACKUP" ]; then
-        warn "service restart failed, restoring previous sing-box config"
-        cp -f "$TEMP_CONFIG_BACKUP" "$CONFIG_FILE" || fail "failed to restore previous config"
-        chmod 0644 "$CONFIG_FILE"
-        config_changed=0
-        config_rolled_back=1
-        return 0
-    fi
-
-    warn "service restart failed and no previous config is available, removing updated config"
-    rm -f "$CONFIG_FILE" 2>/dev/null || true
-    return 1
-}
-
-restart_service_once() {
-    [ -x "$INITD" ] || {
-        warn "init script not found, skipped service restart"
-        return 0
-    }
-
-    info "restarting sing-box service"
-    "$INITD" restart >/dev/null 2>&1 || return 1
-    sleep 3
-
-    service_running
-}
-
-restart_service() {
-    if restart_service_once; then
-        info "sing-box service is running"
-        return 0
-    fi
-
-    if [ "$config_changed" -eq 1 ]; then
-        if rollback_config_update; then
-            warn "retrying sing-box with the previous config"
-            restart_service_once || fail "failed to restart sing-box after restoring previous config"
-            info "sing-box service is running"
-            warn "new config was rolled back after restart failure"
-            return 0
-        fi
-
-        fail "failed to restart sing-box and no previous config was available to restore"
-    fi
-
-    fail "failed to restart sing-box"
 }
 
 main() {
@@ -865,79 +711,27 @@ main() {
         interactive)
             interactive_menu
             ;;
-        set-config-url)
+        status)
+            show_status
+            exit 0
+            ;;
+        show-url)
+            show_url_cli
+            exit 0
+            ;;
+        set-url)
+            ensure_runtime_dirs
             require_root
-            if [ -z "$config_url" ] && is_interactive_terminal; then
-                config_url="$(prompt_line 'url: ')"
-            fi
             save_config_url "$config_url"
             exit 0
             ;;
-        show-config-url)
-            show_config_url
-            exit 0
-            ;;
-        set-channel)
-            require_root
-            if [ -z "$release_channel" ] && is_interactive_terminal; then
-                release_channel="$(prompt_line 'channel [stable/beta]: ')"
-            fi
-            save_release_channel "$release_channel"
-            exit 0
-            ;;
-        show-channel)
-            show_release_channel
+        help)
+            show_help
             exit 0
             ;;
     esac
 
-    require_root
-    acquire_lock
-    check_deps
-
-    case "$action" in
-        all|config)
-            resolve_config_url >/dev/null
-            ;;
-    esac
-
-    : > "$LOG_FILE"
-    info "action=${action}"
-
-    case "$action" in
-        all)
-            update_core
-            update_config
-            ;;
-        core)
-            update_core
-            ;;
-        config)
-            update_config
-            ;;
-    esac
-
-    if [ "$core_changed" -eq 1 ] || [ "$config_changed" -eq 1 ]; then
-        restart_service
-    elif ! pidof sing-box >/dev/null 2>&1; then
-        warn "sing-box is not running, trying to start it"
-        restart_service
-    else
-        info "no restart needed"
-    fi
-
-    info "done"
-    if is_interactive_terminal; then
-        core_state="no"
-        config_state="no"
-        [ "$core_changed" -eq 1 ] && core_state="yes"
-        if [ "$config_rolled_back" -eq 1 ]; then
-            config_state="rolled_back"
-        elif [ "$config_changed" -eq 1 ]; then
-            config_state="yes"
-        fi
-        show_result_panel "$core_state" "$config_state"
-    fi
+    run_mutating_action
 }
 
 main "$@"

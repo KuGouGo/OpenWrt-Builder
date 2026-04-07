@@ -1,0 +1,24 @@
+#!/bin/sh
+
+# Add ImmortalWrt APK repository matching the installed OpenWrt version.
+# The repo provides ImmortalWrt-specific packages not available upstream.
+
+REPO_FILE="/etc/apk/repositories.d/immortalwrt.list"
+RELEASE_FILE="/etc/openwrt_release"
+
+[ -f "$RELEASE_FILE" ] || exit 0
+
+# shellcheck source=/etc/openwrt_release
+. "$RELEASE_FILE"
+
+[ -n "${DISTRIB_RELEASE:-}" ] || exit 0
+
+# Extract major.minor (e.g. "25.12.0" → "25.12")
+ver="$(printf '%s\n' "$DISTRIB_RELEASE" | awk -F. '{printf "%s.%s", $1, $2}')"
+[ -n "$ver" ] && [ "$ver" != "." ] || exit 0
+
+mkdir -p "$(dirname "$REPO_FILE")"
+printf 'https://downloads.immortalwrt.org/releases/packages-%s/x86_64\n' "$ver" \
+    > "$REPO_FILE"
+
+exit 0
