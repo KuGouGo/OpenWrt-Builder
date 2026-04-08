@@ -29,6 +29,8 @@ PACKAGES_FILE=config/packages.list
 `config/packages.list` — 额外安装的包及需移除的默认包（`-` 前缀表示移除）。
 
 `files/` — 覆盖到镜像的初始化文件和 UCI defaults，在首次启动时执行：
+- `95-apk-immortalwrt`：自动匹配可用的 ImmortalWrt APK 源，不可用时移除该覆盖源
+- `96-local-tools`：确保本地工具脚本可执行
 - `97-system-cn`：时区设为 Asia/Shanghai，NTP 切换为国内服务器
 - `98-apk-mirror`：APK 源替换为 USTC 镜像
 
@@ -40,8 +42,9 @@ PACKAGES_FILE=config/packages.list
 
 ```
 sb                        # 交互式菜单（终端模式）或自动更新（非终端）
-sb core --stable          # 仅更新核心到最新稳定版
-sb config --config-url URL  # 仅更新配置
-sb set-config-url URL     # 保存配置订阅地址
-sb set-channel beta       # 切换到 beta 通道
+sb core                   # 仅更新核心到最新 Release
+sb config URL             # 使用指定 URL 更新配置（不保存）
+sb set-url URL            # 保存配置订阅地址
+sb show-url               # 查看当前保存的订阅地址
+sb status                 # 查看当前状态
 ```

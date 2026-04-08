@@ -407,7 +407,7 @@ update_config() {
     mkdir -p "$CONFIG_DIR"
     backup_current_config
     cp -f "$TEMP_CONFIG" "$CONFIG_FILE"
-    chmod 644 "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"
     config_changed=1
     info "Config updated."
 }
@@ -417,7 +417,7 @@ rollback_config_update() {
        && [ -f "$CONFIG_ROLLBACK_FILE" ]; then
         warn "Service restart failed. Restoring previous config..."
         cp -f "$CONFIG_ROLLBACK_FILE" "$CONFIG_FILE" || fail "Failed to restore config"
-        chmod 644 "$CONFIG_FILE"
+        chmod 600 "$CONFIG_FILE"
         config_changed=0
         config_rolled_back=1
         return 0

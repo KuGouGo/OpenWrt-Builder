@@ -1,10 +1,12 @@
 #!/bin/sh
 
 # Add ImmortalWrt APK repository matching the installed OpenWrt version.
-# The repo provides ImmortalWrt-specific packages not available upstream.
+# If the exact packages-x.y repo is not published yet, fall back to the
+# latest available branch not newer than the running OpenWrt major.minor.
 
 REPO_FILE="/etc/apk/repositories.d/immortalwrt.list"
 RELEASE_FILE="/etc/openwrt_release"
+IMMORTAL_BASE="${IMMORTAL_BASE:-https://mirrors.ustc.edu.cn/immortalwrt}"
 
 [ -f "$RELEASE_FILE" ] || exit 0
 
@@ -17,8 +19,86 @@ RELEASE_FILE="/etc/openwrt_release"
 ver="$(printf '%s\n' "$DISTRIB_RELEASE" | awk -F. '{printf "%s.%s", $1, $2}')"
 [ -n "$ver" ] && [ "$ver" != "." ] || exit 0
 
+arch="${DISTRIB_ARCH:-x86_64}"
+
+fetch_text() {
+    url="$1"
+    if command -v uclient-fetch >/dev/null 2>&1; then
+        uclient-fetch -qO- -T 8 "$url"
+        return $?
+    fi
+    if command -v wget >/dev/null 2>&1; then
+        wget -qO- -T 8 "$url"
+        return $?
+    fi
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --connect-timeout 8 --max-time 15 "$url"
+        return $?
+    fi
+    return 127
+}
+
+url_ok() {
+    fetch_text "$1" >/dev/null 2>&1
+}
+
+repo_ready() {
+    v="$1"
+    root="${IMMORTAL_BASE}/releases/packages-${v}/${arch}"
+    url_ok "${root}/packages/index.json" && url_ok "${root}/luci/index.json"
+}
+
+pick_fallback_version() {
+    target="$1"
+    awk -v target="$target" -F. '
+      function ver_key(v, arr) {
+        split(v, arr, ".")
+        if (arr[1] ~ /^[0-9]+$/ && arr[2] ~ /^[0-9]+$/) return arr[1] * 1000 + arr[2]
+        return -1
+      }
+      BEGIN {
+        target_key = ver_key(target)
+        best_key = -1
+      }
+      {
+        k = ver_key($0)
+        if (k < 0) next
+        if (k <= target_key && k > best_key) {
+          best_key = k
+          best = $0
+        }
+      }
+      END {
+        if (best != "") print best
+      }'
+}
+
+selected_ver="$ver"
+if ! repo_ready "$selected_ver"; then
+    versions="$(fetch_text "${IMMORTAL_BASE}/releases/" 2>/dev/null \
+      | sed -n 's#.*packages-\([0-9][0-9]*\.[0-9][0-9]*\)/.*#\1#p' \
+      | sort -u)"
+
+    if [ -n "$versions" ]; then
+        fallback_ver="$(printf '%s\n' "$versions" | pick_fallback_version "$ver")"
+        if [ -n "$fallback_ver" ] && repo_ready "$fallback_ver"; then
+            selected_ver="$fallback_ver"
+        else
+            selected_ver=""
+        fi
+    else
+        selected_ver=""
+    fi
+fi
+
+if [ -z "$selected_ver" ]; then
+    # No usable ImmortalWrt package branch found; remove stale repo override.
+    rm -f "$REPO_FILE"
+    exit 0
+fi
+
 mkdir -p "$(dirname "$REPO_FILE")"
-base="https://downloads.immortalwrt.org/releases/packages-${ver}/x86_64"
+base="${IMMORTAL_BASE}/releases/packages-${selected_ver}/${arch}"
 printf '%s\n' "${base}/luci" "${base}/packages" > "$REPO_FILE"
 
 exit 0
